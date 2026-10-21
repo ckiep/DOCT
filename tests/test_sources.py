@@ -4,7 +4,13 @@ import urllib.error
 from io import BytesIO
 
 from ticket_alert.notifiers import NotifyError, TelegramNotifier, html_to_text
-from ticket_alert.travelpayouts import SourceError, TravelpayoutsClient, build_params, parse_offers
+from ticket_alert.travelpayouts import (
+    SourceError,
+    TravelpayoutsClient,
+    build_params,
+    parse_offers,
+    partner_link,
+)
 
 from tests.helpers import FakeResponse, FakeUrlopen, make_route
 
@@ -54,13 +60,26 @@ class TravelpayoutsTest(unittest.TestCase):
         self.assertIsNone(offer.return_at)
         self.assertEqual(offer.key, "2026-12-05|")
 
+    def test_partner_link(self):
+        site = "https://www.aviasales.kz"
+        self.assertEqual(partner_link(site, "/search/ALA0512IST1"), site + "/search/ALA0512IST1")
+        self.assertEqual(
+            partner_link(site, "/search/ALA0512IST1", "123456"),
+            site + "/search/ALA0512IST1?marker=123456",
+        )
+        self.assertEqual(
+            partner_link(site, "/search/ALA0512IST1?t=PC17649", "123456.bot"),
+            site + "/search/ALA0512IST1?t=PC17649&marker=123456.bot",
+        )
+        self.assertEqual(partner_link(site, "", "123456"), site + "?marker=123456")
+
     def test_parse_error_payload(self):
         with self.assertRaises(SourceError):
             parse_offers({"success": False, "error": "bad params"})
 
     def test_search_sends_token_in_header_and_handles_gzip(self):
         urlopen = FakeUrlopen(FakeResponse(SAMPLE, gzipped=True))
-        client = TravelpayoutsClient("secret", urlopen=urlopen)
+        client = TravelpayoutsClient("secret", marker="123456", urlopen=urlopen)
 
         offers = client.search(make_route())
 
@@ -70,7 +89,9 @@ class TravelpayoutsTest(unittest.TestCase):
         self.assertNotIn("secret", request.full_url)
         self.assertIn("origin=MOW", request.full_url)
         self.assertIn("market=kz", request.full_url)
-        self.assertTrue(offers[0].link.startswith("https://www.aviasales.kz/"))
+        self.assertEqual(
+            offers[0].link, "https://www.aviasales.kz/search/VKO0512SAW1?t=PC17649&marker=123456"
+        )
 
     def test_search_unauthorized(self):
         error = urllib.error.HTTPError("url", 401, "Unauthorized", {}, BytesIO(b""))

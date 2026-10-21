@@ -20,6 +20,7 @@ class ConfigTest(unittest.TestCase):
         config = load_config(ROOT / "config.example.toml", env=env)
 
         self.assertEqual(config.travelpayouts_token, "tp")
+        self.assertEqual(config.marker, "")
         self.assertEqual(config.telegram_bot_token, "bot")
         self.assertEqual(config.telegram_chat_id, "42")
         self.assertEqual(config.state_file, ROOT / "ticket_alert.db")
@@ -51,6 +52,18 @@ class ConfigTest(unittest.TestCase):
             body = "\n".join(f"{k}={v}" for k, v in fields.items())
             path = self.write(f'[travelpayouts]\ntoken="x"\n[[routes]]\n{body}\n')
             with self.subTest(override), self.assertRaisesRegex(ConfigError, message):
+                load_config(path, env={})
+
+    def test_marker(self):
+        route = '[[routes]]\norigin="ALA"\ndestination="IST"\ndeparture="2026-12"\nmax_price=1\n'
+        for value, expected in (('"123456"', "123456"), ("123456", "123456"), ('"123456.bot"', "123456.bot")):
+            path = self.write(f'[travelpayouts]\ntoken="x"\nmarker={value}\n{route}')
+            with self.subTest(value):
+                self.assertEqual(load_config(path, env={}).marker, expected)
+
+        for value in ('"marker=123456"', '"12 34"', '"abc"'):
+            path = self.write(f'[travelpayouts]\ntoken="x"\nmarker={value}\n{route}')
+            with self.subTest(value), self.assertRaisesRegex(ConfigError, "marker"):
                 load_config(path, env={})
 
     def test_lowercase_codes_are_normalized(self):

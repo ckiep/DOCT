@@ -56,7 +56,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    source = TravelpayoutsClient(config.travelpayouts_token, config.currency, config.market)
+    source = TravelpayoutsClient(
+        config.travelpayouts_token, config.currency, config.market, marker=config.marker
+    )
     storage = Storage(config.state_file)
 
     def check() -> int:

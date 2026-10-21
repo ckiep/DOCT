@@ -19,6 +19,7 @@ class Config:
     travelpayouts_token: str
     currency: str
     market: str
+    marker: str
     telegram_bot_token: str
     telegram_chat_id: str
     interval_minutes: int
@@ -28,6 +29,8 @@ class Config:
 
 _IATA = re.compile(r"^[A-Z]{3}$")
 _DATE = re.compile(r"^\d{4}-\d{2}(-\d{2})?$")
+# Партнёрский ID и необязательный доп. маркер через точку: 123456 или 123456.bot
+_MARKER = re.compile(r"^\d+(\.[A-Za-z0-9_]{1,32})?$")
 
 
 def load_config(path: str | Path, env: Mapping[str, str] = os.environ) -> Config:
@@ -44,6 +47,12 @@ def load_config(path: str | Path, env: Mapping[str, str] = os.environ) -> Config
     if not token:
         raise ConfigError(
             "не задан токен Travelpayouts: [travelpayouts] token или TRAVELPAYOUTS_TOKEN"
+        )
+
+    marker = str(tp.get("marker", "")).strip()
+    if marker and not _MARKER.match(marker):
+        raise ConfigError(
+            "[travelpayouts] marker должен быть вашим партнёрским ID из цифр, например 123456"
         )
 
     interval = check.get("interval_minutes", 60)
@@ -63,6 +72,7 @@ def load_config(path: str | Path, env: Mapping[str, str] = os.environ) -> Config
         travelpayouts_token=token,
         currency=str(tp.get("currency", "kzt")).lower(),
         market=str(tp.get("market", "kz")).lower(),
+        marker=marker,
         telegram_bot_token=env.get("TELEGRAM_BOT_TOKEN") or tg.get("bot_token", ""),
         telegram_chat_id=env.get("TELEGRAM_CHAT_ID") or str(tg.get("chat_id", "")),
         interval_minutes=interval,

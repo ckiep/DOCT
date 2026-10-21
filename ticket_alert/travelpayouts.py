@@ -26,6 +26,14 @@ def site_url(market: str) -> str:
     return SITE_URLS.get(market, DEFAULT_SITE_URL)
 
 
+def partner_link(site: str, path: str, marker: str = "") -> str:
+    """Ссылка на покупку; с маркером Travelpayouts она становится партнёрской."""
+    link = site + path
+    if marker:
+        link += ("&" if "?" in link else "?") + urllib.parse.urlencode({"marker": marker})
+    return link
+
+
 class SourceError(Exception):
     """Не удалось получить цены."""
 
@@ -49,7 +57,9 @@ def build_params(route: Route, currency: str, market: str, limit: int = 100) -> 
     return params
 
 
-def parse_offers(payload: dict[str, Any], site: str = DEFAULT_SITE_URL) -> list[Offer]:
+def parse_offers(
+    payload: dict[str, Any], site: str = DEFAULT_SITE_URL, marker: str = ""
+) -> list[Offer]:
     if not payload.get("success", False):
         raise SourceError(f"API вернул ошибку: {payload.get('error') or payload}")
 
@@ -66,7 +76,7 @@ def parse_offers(payload: dict[str, Any], site: str = DEFAULT_SITE_URL) -> list[
                     flight_number=str(item.get("flight_number") or ""),
                     transfers=int(item.get("transfers") or 0),
                     return_transfers=int(item.get("return_transfers") or 0),
-                    link=site + item["link"] if item.get("link") else site,
+                    link=partner_link(site, item.get("link") or "", marker),
                 )
             )
         except (KeyError, TypeError, ValueError):
@@ -81,12 +91,14 @@ class TravelpayoutsClient:
         token: str,
         currency: str = "kzt",
         market: str = "kz",
+        marker: str = "",
         timeout: float = 20,
         urlopen: Callable[..., Any] = urllib.request.urlopen,
     ) -> None:
         self.token = token
         self.currency = currency
         self.market = market
+        self.marker = marker
         self.timeout = timeout
         self._urlopen = urlopen
 
@@ -117,4 +129,4 @@ class TravelpayoutsClient:
             payload = json.loads(body)
         except ValueError as e:
             raise SourceError("Travelpayouts вернул не JSON") from e
-        return parse_offers(payload, site_url(self.market))
+        return parse_offers(payload, site_url(self.market), self.marker)
