@@ -61,8 +61,8 @@ def load_config(path: str | Path, env: Mapping[str, str] = os.environ) -> Config
 
     return Config(
         travelpayouts_token=token,
-        currency=str(tp.get("currency", "rub")).lower(),
-        market=str(tp.get("market", "ru")).lower(),
+        currency=str(tp.get("currency", "kzt")).lower(),
+        market=str(tp.get("market", "kz")).lower(),
         telegram_bot_token=env.get("TELEGRAM_BOT_TOKEN") or tg.get("bot_token", ""),
         telegram_chat_id=env.get("TELEGRAM_CHAT_ID") or str(tg.get("chat_id", "")),
         interval_minutes=interval,

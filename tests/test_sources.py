@@ -46,11 +46,11 @@ class TravelpayoutsTest(unittest.TestCase):
         self.assertEqual(params["currency"], "usd")
 
     def test_parse_skips_broken_rows_and_builds_link(self):
-        offers = parse_offers(SAMPLE)
+        offers = parse_offers(SAMPLE, "https://www.aviasales.kz")
         self.assertEqual(len(offers), 1)
         offer = offers[0]
         self.assertEqual(offer.price, 9870)
-        self.assertEqual(offer.link, "https://www.aviasales.ru/search/VKO0512SAW1?t=PC17649")
+        self.assertEqual(offer.link, "https://www.aviasales.kz/search/VKO0512SAW1?t=PC17649")
         self.assertIsNone(offer.return_at)
         self.assertEqual(offer.key, "2026-12-05|")
 
@@ -69,6 +69,8 @@ class TravelpayoutsTest(unittest.TestCase):
         self.assertEqual(request.get_header("X-access-token"), "secret")
         self.assertNotIn("secret", request.full_url)
         self.assertIn("origin=MOW", request.full_url)
+        self.assertIn("market=kz", request.full_url)
+        self.assertTrue(offers[0].link.startswith("https://www.aviasales.kz/"))
 
     def test_search_unauthorized(self):
         error = urllib.error.HTTPError("url", 401, "Unauthorized", {}, BytesIO(b""))

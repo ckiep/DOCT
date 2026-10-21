@@ -17,7 +17,13 @@ from typing import Any, Callable
 from .models import Offer, Route
 
 API_URL = "https://api.travelpayouts.com/aviasales/v3/prices_for_dates"
-SITE_URL = "https://www.aviasales.ru"
+SITE_URLS = {"kz": "https://www.aviasales.kz", "ru": "https://www.aviasales.ru", "uz": "https://www.aviasales.uz"}
+DEFAULT_SITE_URL = "https://www.aviasales.com"
+
+
+def site_url(market: str) -> str:
+    """Ссылки на покупку ведут на сайт Aviasales своей страны."""
+    return SITE_URLS.get(market, DEFAULT_SITE_URL)
 
 
 class SourceError(Exception):
@@ -43,7 +49,7 @@ def build_params(route: Route, currency: str, market: str, limit: int = 100) -> 
     return params
 
 
-def parse_offers(payload: dict[str, Any]) -> list[Offer]:
+def parse_offers(payload: dict[str, Any], site: str = DEFAULT_SITE_URL) -> list[Offer]:
     if not payload.get("success", False):
         raise SourceError(f"API вернул ошибку: {payload.get('error') or payload}")
 
@@ -60,7 +66,7 @@ def parse_offers(payload: dict[str, Any]) -> list[Offer]:
                     flight_number=str(item.get("flight_number") or ""),
                     transfers=int(item.get("transfers") or 0),
                     return_transfers=int(item.get("return_transfers") or 0),
-                    link=SITE_URL + item["link"] if item.get("link") else SITE_URL,
+                    link=site + item["link"] if item.get("link") else site,
                 )
             )
         except (KeyError, TypeError, ValueError):
@@ -73,8 +79,8 @@ class TravelpayoutsClient:
     def __init__(
         self,
         token: str,
-        currency: str = "rub",
-        market: str = "ru",
+        currency: str = "kzt",
+        market: str = "kz",
         timeout: float = 20,
         urlopen: Callable[..., Any] = urllib.request.urlopen,
     ) -> None:
@@ -111,4 +117,4 @@ class TravelpayoutsClient:
             payload = json.loads(body)
         except ValueError as e:
             raise SourceError("Travelpayouts вернул не JSON") from e
-        return parse_offers(payload)
+        return parse_offers(payload, site_url(self.market))

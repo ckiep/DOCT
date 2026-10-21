@@ -5,8 +5,10 @@
 # Бесплатный токен: зарегистрируйтесь на https://www.travelpayouts.com/,
 # затем Профиль → API-токен. Можно не писать здесь, а задать TRAVELPAYOUTS_TOKEN.
 token = ""
-currency = "rub"
-market = "ru"
+# Валюта цен: kzt, rub, usd, eur...
+currency = "kzt"
+# Страна Aviasales: kz — ссылки на aviasales.kz
+market = "kz"
 
 [telegram]
 # Токен бота от @BotFather (или переменная TELEGRAM_BOT_TOKEN).
@@ -21,22 +23,22 @@ interval_minutes = 60
 state_file = "ticket_alert.db"
 
 # Маршруты: сколько угодно блоков [[routes]].
-# origin / destination — IATA-коды городов или аэропортов (MOW, LED, IST, AYT, DXB...).
+# origin / destination — IATA-коды городов или аэропортов (ALA, NQZ, CIT, IST, DXB...).
 # departure / return — месяц (YYYY-MM) или конкретный день (YYYY-MM-DD).
 # Без return ищутся билеты в одну сторону.
 
 [[routes]]
-name = "Москва → Стамбул, декабрь"
-origin = "MOW"
+name = "Алматы → Стамбул, декабрь"
+origin = "ALA"
 destination = "IST"
 departure = "2026-12"
-max_price = 12000
+max_price = 90000
 
 [[routes]]
-name = "Питер → Сочи и обратно, только прямые"
-origin = "LED"
-destination = "AER"
+name = "Астана → Алматы и обратно, только прямые"
+origin = "NQZ"
+destination = "ALA"
 departure = "2027-01"
 return = "2027-01"
-max_price = 15000
+max_price = 50000
 direct_only = true
