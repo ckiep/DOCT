@@ -32,6 +32,12 @@ class PlacesTest(unittest.TestCase):
         self.assertEqual(self.places.name("ZZZ"), "ZZZ")
         self.assertEqual(self.places.name("ALA"), "Алматы")  # из встроенного списка
 
+    def test_same_country(self):
+        self.assertTrue(self.places.same_country("ALA", "NQZ"))
+        self.assertFalse(self.places.same_country("ALA", "IST"))
+        self.assertFalse(self.places.same_country("ALA", "ZZZ"))  # неизвестный город — считаем заграницей
+        self.assertTrue(Places.builtin().same_country("ALA", "CIT"))
+
     def test_resolve_by_name_code_and_alias(self):
         self.assertEqual(self.places.resolve("стамбул").code, "IST")
         self.assertEqual(self.places.resolve("Istanbul").code, "IST")

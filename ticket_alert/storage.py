@@ -34,6 +34,12 @@ CREATE TABLE IF NOT EXISTS chats (
     chat_id INTEGER PRIMARY KEY,
     home TEXT
 );
+CREATE TABLE IF NOT EXISTS users (
+    chat_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL,  -- pending, allowed или rejected
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -105,6 +111,38 @@ class Storage:
         for route in expired:
             self.delete_route(route.chat_id, route.id)
         return expired
+
+    def delete_routes(self, chat_id: int) -> None:
+        for route in self.routes(chat_id):
+            self.delete_route(chat_id, route.id)
+
+    # --- кто, кроме владельца, может пользоваться ботом
+
+    def user_status(self, chat_id: int) -> str | None:
+        row = self.conn.execute("SELECT status FROM users WHERE chat_id = ?", (chat_id,)).fetchone()
+        return row[0] if row else None
+
+    def user_name(self, chat_id: int) -> str | None:
+        row = self.conn.execute("SELECT name FROM users WHERE chat_id = ?", (chat_id,)).fetchone()
+        return row[0] if row else None
+
+    def set_user(self, chat_id: int, name: str, status: str) -> None:
+        self.conn.execute(
+            "INSERT INTO users (chat_id, name, status, updated_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (chat_id) DO UPDATE SET name = excluded.name, status = excluded.status, "
+            "updated_at = excluded.updated_at",
+            (chat_id, name, status, _now()),
+        )
+        self.conn.commit()
+
+    def users(self, status: str) -> list[tuple[int, str]]:
+        return self.conn.execute(
+            "SELECT chat_id, name FROM users WHERE status = ? ORDER BY updated_at", (status,)
+        ).fetchall()
+
+    def forget_user(self, chat_id: int) -> None:
+        self.conn.execute("DELETE FROM users WHERE chat_id = ?", (chat_id,))
+        self.conn.commit()
 
     # --- город вылета по умолчанию
 

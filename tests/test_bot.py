@@ -42,7 +42,8 @@ class BotTestCase(unittest.TestCase):
     def offers(route):
         if route.destination is None:
             return [
-                make_offer(20000, day=7, destination="CIT"),
+                make_offer(15000, day=2, destination="CIT"),  # внутренний рейс — не показываем
+                make_offer(22000, day=7, destination="TAS"),
                 make_offer(25000, day=3, destination="DXB", transfers=1),
                 make_offer(58802, day=4, destination="IST"),
             ]
@@ -66,7 +67,7 @@ class AddRouteTest(BotTestCase):
 
         self.send(callback("o:ALA"))
         self.assertEqual(self.api.last["method"], "edit")
-        self.assertIn(("🌍 Куда угодно — самые дешёвые", "d:*"), self.api.buttons())
+        self.assertIn(("🌍 Куда угодно за границу", "d:*"), self.api.buttons())
         self.assertNotIn(("Алматы", "d:ALA"), self.api.buttons())
 
         self.send(callback("d:IST"))
@@ -95,19 +96,20 @@ class AddRouteTest(BotTestCase):
     def test_add_anywhere_route_by_typing(self):
         self.send(message(MENU_ADD), message("алматы"), callback("d:*"))
         self.send(message("декабрь"))
-        self.assertIn("Сейчас самый дешёвый билет: <b>20 000 ₸</b>, Шымкент, 07.12.", self.api.last["text"])
+        self.assertIn("Сейчас самый дешёвый билет: <b>22 000 ₸</b>, Ташкент, 07.12.", self.api.last["text"])
 
         self.send(message("30к"))
-        self.assertIn("куда угодно, декабрь 2026, до 30 000 ₸", self.api.last["text"])
+        self.assertIn("Алматы → за границу, декабрь 2026, до 30 000 ₸", self.api.last["text"])
 
         self.send(callback("s:direct"))
         route = self.storage.routes(OWNER)[0]
         self.assertIsNone(route.destination)
         self.assertTrue(route.direct_only)
-        # Сразу после сохранения приходит подходящий билет: Шымкент прямым рейсом за 20 000.
+        # Сразу после сохранения приходит подходящий билет: Ташкент прямым рейсом за 22 000.
         alert = self.api.last["text"]
         self.assertIn("🌍", alert)
-        self.assertIn("Шымкент — <b>20 000 ₸</b>", alert)
+        self.assertIn("Ташкент — <b>22 000 ₸</b>", alert)
+        self.assertNotIn("Шымкент", alert)
         self.assertNotIn("Дубай", alert)  # с пересадкой
 
     def test_ambiguous_and_unknown_city(self):
@@ -148,12 +150,13 @@ class AddRouteTest(BotTestCase):
 class CheapestTest(BotTestCase):
     def test_cheapest_anywhere_and_subscribe(self):
         self.send(message(MENU_CHEAP), callback("o:ALA"))
-        self.assertIn("Из Алматы, куда угодно", self.api.last["text"])
+        self.assertIn("Из Алматы за границу", self.api.last["text"])
 
         self.send(callback("m:2026-12"))
         text = self.api.last["text"]
-        self.assertIn("Самые дешёвые билеты из Алматы, декабрь 2026", text)
-        self.assertLess(text.index("Шымкент"), text.index("Дубай"))
+        self.assertIn("Самые дешёвые билеты за границу из Алматы, декабрь 2026", text)
+        self.assertLess(text.index("Ташкент"), text.index("Дубай"))
+        self.assertNotIn("Шымкент", text)
         self.assertIsNone(self.source.searches[-1].destination)
 
         self.send(callback("w"))
@@ -178,7 +181,7 @@ class ListAndCheckTest(BotTestCase):
         self.send(message(MENU_LIST))
         text = self.api.last["text"]
         self.assertIn("1. Алматы → Стамбул, декабрь 2026, до 60 000 ₸", text)
-        self.assertIn("2. Алматы → куда угодно", text)
+        self.assertIn("2. Алматы → за границу", text)
         self.assertIn(("🗑 1", f"del:{first.id}"), self.api.buttons())
 
         self.send(callback(f"del:{first.id}"))
@@ -199,13 +202,82 @@ class ListAndCheckTest(BotTestCase):
         self.assertIn("Новых или подешевевших билетов нет", self.api.last["text"])
 
 
+BROTHER = 555
+
+
+def from_brother(update):
+    update["message"]["from"] = {"first_name": "Арман", "username": "arman"}
+    return update
+
+
 class AccessTest(BotTestCase):
-    def test_stranger_is_refused(self):
-        self.send(message("/start", chat_id=999))
-        self.assertIn("личный бот", self.api.last["text"])
+    def messages_to(self, chat_id):
+        return [m["text"] for m in self.api.sent if m["chat_id"] == chat_id]
+
+    def test_stranger_asks_owner_for_access(self):
+        self.send(from_brother(message("/start", chat_id=BROTHER)))
+
+        self.assertIn("отправил владельцу запрос", self.messages_to(BROTHER)[-1])
+        request = self.api.last
+        self.assertEqual(request["chat_id"], OWNER)
+        self.assertIn("Арман (@arman)", request["text"])
+        self.assertIn(f"ID {BROTHER}", request["text"])
+        self.assertEqual(self.api.buttons(), [("✅ Разрешить", f"acc:{BROTHER}"), ("✖ Отклонить", f"rej:{BROTHER}")])
+
+        # Повторные сообщения не засыпают владельца запросами.
+        self.send(from_brother(message("привет", chat_id=BROTHER)))
+        self.assertIn("Запрос уже у владельца", self.messages_to(BROTHER)[-1])
+        self.assertEqual(len(self.messages_to(OWNER)), 1)
+
+    def test_owner_allows_and_brother_can_use_the_bot(self):
+        self.send(from_brother(message("/start", chat_id=BROTHER)), callback(f"acc:{BROTHER}"))
+
+        self.assertIn("теперь может пользоваться ботом", self.messages_to(OWNER)[-1])
+        self.assertIn("Доступ открыт", self.messages_to(BROTHER)[-1])
+
+        self.send(message(MENU_ADD, chat_id=BROTHER), callback("o:NQZ", chat_id=BROTHER))
+        self.send(callback("d:IST", chat_id=BROTHER), callback("m:2026-12", chat_id=BROTHER))
+        self.send(callback("b:50000", chat_id=BROTHER), callback("s:all", chat_id=BROTHER))
+        self.assertEqual(len(self.storage.routes(BROTHER)), 1)
+        self.assertEqual(self.storage.routes(OWNER), [])
+
+    def test_owner_rejects(self):
+        self.send(from_brother(message("/start", chat_id=BROTHER)), callback(f"rej:{BROTHER}"))
+        self.assertIn("Отклонено", self.messages_to(OWNER)[-1])
+        self.send(message("/start", chat_id=BROTHER))
+        self.assertIn("не открыл вам доступ", self.messages_to(BROTHER)[-1])
+
+    def test_only_owner_decides(self):
+        self.storage.set_user(BROTHER, "Арман", "allowed")
+        self.send(callback("acc:777", chat_id=BROTHER))
+        self.assertEqual(self.api.answers[-1][1], "Это может только владелец бота")
+        self.assertIsNone(self.storage.user_status(777))
+
+    def test_users_list_and_revoke(self):
+        self.storage.set_user(BROTHER, "Арман (@arman)", "allowed")
+        self.storage.add_route(make_route(chat_id=BROTHER))
+
+        self.send(message("/users"))
+        self.assertIn("Арман (@arman) — направлений: 1", self.api.last["text"])
+
+        self.send(callback(f"rm:{BROTHER}"))
+        self.assertEqual(self.api.answers[-1][1], "Доступ закрыт: Арман (@arman)")
+        self.assertIsNone(self.storage.user_status(BROTHER))
+        self.assertEqual(self.storage.routes(BROTHER), [])
+        self.assertIn("никто не пользуется", self.api.last["text"])
+
+        self.send(message("/start", chat_id=BROTHER))  # может попросить доступ снова
+        self.assertIn("отправил владельцу запрос", self.messages_to(BROTHER)[-1])
+
+    def test_users_command_is_for_owner_only(self):
+        self.storage.set_user(BROTHER, "Арман", "allowed")
+        self.send(message("/users", chat_id=BROTHER))
+        self.assertNotIn("Кто ещё пользуется", self.api.last["text"])
+
+    def test_stranger_buttons_do_nothing(self):
         self.send(callback("add", chat_id=999))
         self.assertEqual(self.api.answers[-1][1], "Это личный бот.")
-        self.assertEqual(len(self.api.sent), 1)
+        self.assertEqual(self.api.sent, [])
 
     def test_public_bot_serves_everyone(self):
         self.bot.public = True

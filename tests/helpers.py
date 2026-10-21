@@ -6,6 +6,7 @@ import json
 from datetime import datetime
 
 from ticket_alert.models import Offer, Route
+from ticket_alert.places import Places
 from ticket_alert.storage import Storage
 
 
@@ -30,8 +31,8 @@ def make_offer(price: int, day: int = 5, destination: str = "IST", **overrides) 
     return Offer(**fields)
 
 
-def names(code: str) -> str:
-    return {"ALA": "Алматы", "IST": "Стамбул", "CIT": "Шымкент", "DXB": "Дубай", "NQZ": "Астана"}.get(code, code)
+PLACES = Places.builtin()
+names = PLACES.name
 
 
 class FakeResponse(io.BytesIO):

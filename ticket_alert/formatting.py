@@ -13,7 +13,7 @@ Names = Callable[[str], str]
 CURRENCY_SYMBOLS = {"rub": "₽", "usd": "$", "eur": "€", "kzt": "₸", "uah": "₴", "byn": "Br"}
 
 MAX_ITEMS_PER_MESSAGE = 10
-MAX_CHEAPEST = 15
+MAX_CHEAPEST = 20
 
 
 def currency_symbol(currency: str) -> str:
@@ -35,7 +35,7 @@ def stops(count: int) -> str:
 
 
 def route_title(route: Route, names: Names) -> str:
-    destination = "куда угодно" if route.anywhere else names(route.destination)
+    destination = "за границу" if route.anywhere else names(route.destination)
     return f"{names(route.origin)} → {destination}, {describe_departure(route.departure)}"
 
 
@@ -98,7 +98,7 @@ def format_cheapest(
     best = cheapest_by_destination(offers)
     if not best:
         return f"Не нашёл билетов {where}. Попробуйте другой месяц."
-    lines = [f"🔥 <b>Самые дешёвые билеты {where}</b>", ""]
+    lines = [f"🔥 <b>Самые дешёвые билеты за границу {where}</b>", ""]
     lines += [format_deal(Deal(o, None), currency, names, with_city=True) for o in best[:limit]]
     lines += ["", "Цены из недавних поисков на Aviasales — перед покупкой проверьте по ссылке."]
     return "\n".join(lines)

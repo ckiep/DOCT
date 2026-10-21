@@ -22,39 +22,64 @@ CITIES_URL = "https://api.travelpayouts.com/data/ru/cities.json"
 COUNTRIES_URL = "https://api.travelpayouts.com/data/ru/countries.json"
 MAX_AGE_SECONDS = 30 * 24 * 3600
 
+# Код города: (название, код страны). Нужен, когда справочник не скачался,
+# и чтобы отличать внутренние рейсы от зарубежных.
 BUILTIN = {
-    "ALA": ("Алматы", "Казахстан"),
-    "NQZ": ("Астана", "Казахстан"),
-    "CIT": ("Шымкент", "Казахстан"),
-    "SCO": ("Актау", "Казахстан"),
-    "AKX": ("Актобе", "Казахстан"),
-    "KGF": ("Караганда", "Казахстан"),
-    "GUW": ("Атырау", "Казахстан"),
-    "UKK": ("Усть-Каменогорск", "Казахстан"),
-    "KSN": ("Костанай", "Казахстан"),
-    "PWQ": ("Павлодар", "Казахстан"),
-    "URA": ("Уральск", "Казахстан"),
-    "KZO": ("Кызылорда", "Казахстан"),
-    "DMB": ("Тараз", "Казахстан"),
-    "PLX": ("Семей", "Казахстан"),
-    "HSA": ("Туркестан", "Казахстан"),
-    "IST": ("Стамбул", "Турция"),
-    "AYT": ("Анталья", "Турция"),
-    "DXB": ("Дубай", "ОАЭ"),
-    "TBS": ("Тбилиси", "Грузия"),
-    "TAS": ("Ташкент", "Узбекистан"),
-    "FRU": ("Бишкек", "Киргизия"),
-    "BAK": ("Баку", "Азербайджан"),
-    "EVN": ("Ереван", "Армения"),
-    "MOW": ("Москва", "Россия"),
-    "LED": ("Санкт-Петербург", "Россия"),
-    "BKK": ("Бангкок", "Таиланд"),
-    "HKT": ("Пхукет", "Таиланд"),
-    "SEL": ("Сеул", "Южная Корея"),
-    "BJS": ("Пекин", "Китай"),
-    "URC": ("Урумчи", "Китай"),
-    "DEL": ("Дели", "Индия"),
-    "SSH": ("Шарм-эль-Шейх", "Египет"),
+    "ALA": ("Алматы", "KZ"),
+    "NQZ": ("Астана", "KZ"),
+    "CIT": ("Шымкент", "KZ"),
+    "SCO": ("Актау", "KZ"),
+    "AKX": ("Актобе", "KZ"),
+    "KGF": ("Караганда", "KZ"),
+    "GUW": ("Атырау", "KZ"),
+    "UKK": ("Усть-Каменогорск", "KZ"),
+    "KSN": ("Костанай", "KZ"),
+    "PWQ": ("Павлодар", "KZ"),
+    "URA": ("Уральск", "KZ"),
+    "KZO": ("Кызылорда", "KZ"),
+    "DMB": ("Тараз", "KZ"),
+    "PLX": ("Семей", "KZ"),
+    "HSA": ("Туркестан", "KZ"),
+    "KOV": ("Кокшетау", "KZ"),
+    "PPK": ("Петропавловск", "KZ"),
+    "TDK": ("Талдыкорган", "KZ"),
+    "DZN": ("Жезказган", "KZ"),
+    "BXH": ("Балхаш", "KZ"),
+    "AYK": ("Аркалык", "KZ"),
+    "IST": ("Стамбул", "TR"),
+    "AYT": ("Анталья", "TR"),
+    "DXB": ("Дубай", "AE"),
+    "TBS": ("Тбилиси", "GE"),
+    "TAS": ("Ташкент", "UZ"),
+    "FRU": ("Бишкек", "KG"),
+    "BAK": ("Баку", "AZ"),
+    "EVN": ("Ереван", "AM"),
+    "MOW": ("Москва", "RU"),
+    "LED": ("Санкт-Петербург", "RU"),
+    "BKK": ("Бангкок", "TH"),
+    "HKT": ("Пхукет", "TH"),
+    "SEL": ("Сеул", "KR"),
+    "BJS": ("Пекин", "CN"),
+    "URC": ("Урумчи", "CN"),
+    "DEL": ("Дели", "IN"),
+    "SSH": ("Шарм-эль-Шейх", "EG"),
+}
+
+COUNTRY_NAMES = {
+    "KZ": "Казахстан",
+    "TR": "Турция",
+    "AE": "ОАЭ",
+    "GE": "Грузия",
+    "UZ": "Узбекистан",
+    "KG": "Киргизия",
+    "AZ": "Азербайджан",
+    "AM": "Армения",
+    "RU": "Россия",
+    "TH": "Таиланд",
+    "KR": "Южная Корея",
+    "CN": "Китай",
+    "IN": "Индия",
+    "EG": "Египет",
 }
 
 POPULAR_ORIGINS = ["ALA", "NQZ", "CIT", "SCO", "AKX", "KGF", "GUW", "UKK", "KSN"]
@@ -70,11 +95,19 @@ class Place:
     code: str
     name: str
     country: str = ""
+    country_code: str = ""
     aliases: tuple[str, ...] = ()  # другие написания, например английское
 
     @property
     def label(self) -> str:
         return f"{self.name}, {self.country}" if self.country else f"{self.name} ({self.code})"
+
+
+def _builtin_places() -> dict[str, Place]:
+    return {
+        code: Place(code, name, COUNTRY_NAMES.get(country_code, ""), country_code)
+        for code, (name, country_code) in BUILTIN.items()
+    }
 
 
 class Places:
@@ -83,12 +116,12 @@ class Places:
 
     @classmethod
     def builtin(cls) -> Places:
-        return cls(Place(code, name, country) for code, (name, country) in BUILTIN.items())
+        return cls(_builtin_places().values())
 
     @classmethod
     def from_json(cls, cities: list[dict[str, Any]], countries: list[dict[str, Any]]) -> Places:
         country_names = {c.get("code"): c.get("name") for c in countries if c.get("code")}
-        places = {code: Place(code, name, country) for code, (name, country) in BUILTIN.items()}
+        places = _builtin_places()
         for city in cities:
             code = city.get("code")
             if not code or city.get("has_flightable_airport") is False:
@@ -102,7 +135,8 @@ class Places:
             places[code] = Place(
                 code=code,
                 name=name,
-                country=country_names.get(country_code) or country_code,
+                country=country_names.get(country_code) or COUNTRY_NAMES.get(country_code) or country_code,
+                country_code=country_code,
                 aliases=aliases,
             )
         return cls(places.values())
@@ -127,6 +161,11 @@ class Places:
     def name(self, code: str) -> str:
         place = self._by_code.get(code)
         return place.name if place else code
+
+    def same_country(self, a: str, b: str) -> bool:
+        """True, только если страна обоих городов известна и совпадает."""
+        first, second = self._by_code.get(a), self._by_code.get(b)
+        return bool(first and second and first.country_code and first.country_code == second.country_code)
 
     def search(self, text: str, limit: int = 6) -> list[Place]:
         """Города по названию (русскому или английскому) или по IATA-коду."""

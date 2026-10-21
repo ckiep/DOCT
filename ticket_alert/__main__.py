@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     def check(notifier: Notifier, dry_run: bool = False) -> int:
-        summary: RunSummary = run_once(storage, source, notifier, config.currency, places.name, dry_run)
+        summary: RunSummary = run_once(storage, source, notifier, config.currency, places, dry_run)
         log.info("проверка завершена: вариантов %d, ошибок %d", summary.deals, summary.failed_routes)
         return 1 if summary.failed_routes else 0
 

@@ -9,7 +9,7 @@ from html import escape
 from typing import Iterable, Protocol
 
 from .dates import is_expired
-from .formatting import Names, describe_route, format_alert
+from .formatting import describe_route, format_alert
 from .models import Deal, Offer, Route
 from .storage import Storage
 from .telegram import Notifier, NotifyError
@@ -20,6 +20,21 @@ log = logging.getLogger(__name__)
 
 class PriceSource(Protocol):
     def search(self, route: Route) -> list[Offer]: ...
+
+
+class Directory(Protocol):
+    """Справочник городов (см. places.Places)."""
+
+    def name(self, code: str) -> str: ...
+
+    def same_country(self, a: str, b: str) -> bool: ...
+
+
+def relevant_offers(route: Route, offers: Iterable[Offer], places: Directory) -> list[Offer]:
+    """«Куда угодно» означает за границу: внутренние рейсы своей страны не показываем."""
+    if not route.anywhere:
+        return list(offers)
+    return [o for o in offers if not places.same_country(route.origin, o.destination)]
 
 
 @dataclass(frozen=True)
@@ -63,16 +78,17 @@ def check_route(
     storage: Storage,
     notifier: Notifier,
     currency: str,
-    names: Names,
+    places: Directory,
     dry_run: bool = False,
 ) -> list[Deal]:
-    deals = find_deals(route, source.search(route), storage)
-    title = describe_route(route, names, currency)
+    offers = relevant_offers(route, source.search(route), places)
+    deals = find_deals(route, offers, storage)
+    title = describe_route(route, places.name, currency)
     if not deals:
         log.info("%s: новых дешёвых билетов нет", title)
         return deals
 
-    notifier.send(route.chat_id, format_alert(route, deals, currency, names))
+    notifier.send(route.chat_id, format_alert(route, deals, currency, places.name))
     # Запоминаем только после успешной отправки, иначе оповещение потеряется.
     if not dry_run:
         storage.remember(route.key, [(deal_key(route, d.offer), d.offer) for d in deals])
@@ -85,7 +101,7 @@ def run_once(
     source: PriceSource,
     notifier: Notifier,
     currency: str,
-    names: Names,
+    places: Directory,
     dry_run: bool = False,
     today: date | None = None,
 ) -> RunSummary:
@@ -94,7 +110,7 @@ def run_once(
         routes = [r for r in storage.routes() if not is_expired(r.departure, today)]
     else:
         for route in storage.delete_expired_routes(today):
-            _say_expired(route, notifier, currency, names)
+            _say_expired(route, notifier, currency, places)
         storage.prune(today)
         routes = storage.routes()
 
@@ -104,15 +120,15 @@ def run_once(
     found = failed = 0
     for route in routes:
         try:
-            found += len(check_route(route, source, storage, notifier, currency, names, dry_run))
+            found += len(check_route(route, source, storage, notifier, currency, places, dry_run))
         except (SourceError, NotifyError) as e:
             failed += 1
-            log.error("%s: %s", describe_route(route, names, currency), e)
+            log.error("%s: %s", describe_route(route, places.name, currency), e)
     return RunSummary(found, failed)
 
 
-def _say_expired(route: Route, notifier: Notifier, currency: str, names: Names) -> None:
-    text = f"Даты прошли, больше не слежу: {escape(describe_route(route, names, currency))}"
+def _say_expired(route: Route, notifier: Notifier, currency: str, places: Directory) -> None:
+    text = f"Даты прошли, больше не слежу: {escape(describe_route(route, places.name, currency))}"
     try:
         notifier.send(route.chat_id, text)
     except NotifyError as e:

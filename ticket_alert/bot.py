@@ -10,7 +10,7 @@ from datetime import date
 from html import escape
 from typing import Any, Callable
 
-from .checker import PriceSource, check_route
+from .checker import PriceSource, check_route, relevant_offers
 from .dates import describe_departure, is_expired, parse_departure, upcoming_months
 from .formatting import (
     cheapest_by_destination,
@@ -50,10 +50,10 @@ COMMANDS = [
 
 HELP = (
     "Я слежу за ценами на авиабилеты и пишу, когда появляется билет не дороже вашего бюджета.\n\n"
-    f"{MENU_ADD} — выбрать, откуда и куда лететь (можно «🌍 куда угодно»), месяц и бюджет. "
+    f"{MENU_ADD} — выбрать, откуда и куда лететь (можно «🌍 куда угодно за границу»), месяц и бюджет. "
     "Направлений может быть несколько.\n"
     f"{MENU_LIST} — посмотреть и удалить направления.\n"
-    f"{MENU_CHEAP} — самые дешёвые билеты из вашего города в любые города.\n"
+    f"{MENU_CHEAP} — самые дешёвые билеты из вашего города за границу.\n"
     f"{MENU_CHECK} — проверить цены, не дожидаясь плановой проверки.\n\n"
     "Цены берутся из недавних поисков на Aviasales, поэтому перед покупкой проверяйте их по ссылке."
 )
@@ -137,19 +137,17 @@ class Bot:
             log.exception("ошибка при обработке сообщения")
 
     def _allowed(self, chat_id: int) -> bool:
-        return self.public or chat_id == self.owner_chat_id
+        return (
+            self.public
+            or chat_id == self.owner_chat_id
+            or self.storage.user_status(chat_id) == "allowed"
+        )
 
     def _on_message(self, message: dict[str, Any]) -> None:
         chat_id = message["chat"]["id"]
         text = (message.get("text") or "").strip()
         if not self._allowed(chat_id):
-            log.warning(
-                "сообщение из чужого чата %s (в config.toml chat_id = %s); "
-                "если это вы, впишите этот номер в chat_id",
-                chat_id,
-                self.owner_chat_id,
-            )
-            self.api.send_message(chat_id, "Это личный бот, он отвечает только своему владельцу.")
+            self._request_access(chat_id, message.get("from") or {})
             return
 
         command = text.split()[0].split("@")[0].lower() if text.startswith("/") else text
@@ -167,6 +165,8 @@ class Bot:
             MENU_CHECK: self._check_now,
             "/cancel": self._cancel,
         }
+        if chat_id == self.owner_chat_id:
+            actions["/users"] = self._show_users
         if command in actions:
             actions[command](chat_id)
             return
@@ -210,6 +210,10 @@ class Bot:
 
     def _dispatch(self, chat_id: int, message_id: int | None, data: str) -> str | None:
         kind, _, value = data.partition(":")
+        if kind in ("acc", "rej", "rm"):
+            if chat_id != self.owner_chat_id:
+                return "Это может только владелец бота"
+            return self._decide(message_id, kind, value)
         if kind == "add":
             self._start_add(chat_id)
             return None
@@ -322,9 +326,9 @@ class Bot:
         codes = [c for c in POPULAR_DESTINATIONS if c != code][:9]
         text = (
             f"Из {escape(self.places.name(code))}. Куда летим?\n"
-            "Выберите город, «Куда угодно» или напишите название."
+            "Выберите город, «Куда угодно за границу» или напишите название."
         )
-        anywhere: Button = ("🌍 Куда угодно — самые дешёвые", f"d:{ANYWHERE}")
+        anywhere: Button = ("🌍 Куда угодно за границу", f"d:{ANYWHERE}")
         self._show(chat_id, message_id, text, self._city_keyboard("d", codes, first=anywhere))
 
     def _set_destination(
@@ -340,9 +344,9 @@ class Bot:
     def _draft_title(self, dialog: dict[str, Any]) -> str:
         origin = escape(self.places.name(dialog["origin"]))
         if dialog["mode"] == "cheap":
-            return f"Из {origin}, куда угодно"
+            return f"Из {origin} за границу"
         destination = dialog.get("destination")
-        return f"{origin} → {escape(self.places.name(destination)) if destination else 'куда угодно'}"
+        return f"{origin} → {escape(self.places.name(destination)) if destination else 'за границу'}"
 
     def _ask_month(self, chat_id: int, dialog: dict[str, Any], message_id: int | None = None) -> None:
         months = upcoming_months(self.today())
@@ -382,6 +386,8 @@ class Bot:
     def _ask_budget(self, chat_id: int, dialog: dict[str, Any], message_id: int | None = None) -> None:
         route = self._draft_route(dialog)
         offers = self._search(route)
+        if offers is not None:
+            offers = relevant_offers(route, offers, self.places)
         title = f"<b>{escape(route_title(route, self.places.name))}</b>"
         symbol = currency_symbol(self.currency)
         rows: list[list[Button]] = []
@@ -443,7 +449,7 @@ class Bot:
         self._show(chat_id, message_id, text, inline_keyboard([[("➕ Ещё направление", "add")]]))
         # Если подходящие билеты уже есть — присылаем сразу, не дожидаясь плановой проверки.
         try:
-            check_route(route, self.source, self.storage, self.api, self.currency, self.places.name)
+            check_route(route, self.source, self.storage, self.api, self.currency, self.places)
         except (SourceError, NotifyError) as e:
             log.error("проверка нового направления: %s", e)
 
@@ -453,14 +459,76 @@ class Bot:
         dialog["step"] = "results"
         route = Route(dialog["origin"], None, dialog["departure"], 0)
         offers = self._search(route)
+        if offers is not None:
+            offers = relevant_offers(route, offers, self.places)
         if offers is None:
             text = "Не получилось получить цены, попробуйте чуть позже."
         else:
             text = format_cheapest(route.origin, route.departure, offers, self.currency, self.places.name)
         rows: list[list[Button]] = [[("📅 Другой месяц", "r")]]
         if offers and cheapest_by_destination(offers):
-            rows.insert(0, [("🔔 Следить за дешёвыми билетами отсюда", "w")])
+            rows.insert(0, [("🔔 Следить за дешёвыми билетами за границу", "w")])
         self._show(chat_id, message_id, text, inline_keyboard(rows))
+
+    # --- доступ для других людей
+
+    def _request_access(self, chat_id: int, user: dict[str, Any]) -> None:
+        status = self.storage.user_status(chat_id)
+        if status == "rejected":
+            self.api.send_message(chat_id, "Владелец бота не открыл вам доступ.")
+            return
+        if status == "pending":
+            self.api.send_message(chat_id, "Запрос уже у владельца бота — как только он разрешит, я напишу.")
+            return
+
+        name = " ".join(p for p in (user.get("first_name"), user.get("last_name")) if p) or "Без имени"
+        if user.get("username"):
+            name += f" (@{user['username']})"
+        self.storage.set_user(chat_id, name, "pending")
+        self.api.send_message(
+            chat_id, "Это личный бот. Я отправил владельцу запрос на доступ — как только он разрешит, я напишу."
+        )
+        if self.owner_chat_id is not None:
+            self.api.send_message(
+                self.owner_chat_id,
+                f"👤 <b>{escape(name)}</b> (ID {chat_id}) хочет пользоваться ботом.",
+                inline_keyboard([[("✅ Разрешить", f"acc:{chat_id}"), ("✖ Отклонить", f"rej:{chat_id}")]]),
+            )
+
+    def _decide(self, message_id: int | None, kind: str, value: str) -> str | None:
+        user_id = int(value)
+        name = escape(self.storage.user_name(user_id) or str(user_id))
+        if kind == "acc":
+            self.storage.set_user(user_id, self.storage.user_name(user_id) or str(user_id), "allowed")
+            self._show(self.owner_chat_id, message_id, f"✅ {name} теперь может пользоваться ботом. Список — /users")
+            self.api.send_message(user_id, "Доступ открыт! 🎉\n\n" + HELP, MAIN_KEYBOARD)
+            return None
+        if kind == "rej":
+            self.storage.set_user(user_id, self.storage.user_name(user_id) or str(user_id), "rejected")
+            self._show(self.owner_chat_id, message_id, f"Отклонено: {name}")
+            return None
+        # rm: забрать доступ. Запись удаляем, чтобы человек мог попросить снова.
+        raw_name = self.storage.user_name(user_id) or str(user_id)
+        self.storage.forget_user(user_id)
+        self.storage.delete_routes(user_id)
+        self.dialogs.pop(user_id, None)
+        self._show_users(self.owner_chat_id, message_id)
+        return f"Доступ закрыт: {raw_name}"
+
+    def _show_users(self, chat_id: int, message_id: int | None = None) -> None:
+        users = self.storage.users("allowed")
+        if not users:
+            text = (
+                "Кроме вас, ботом никто не пользуется.\n\n"
+                "Чтобы дать доступ, пусть человек напишет боту /start — вам придёт запрос с кнопкой «Разрешить»."
+            )
+            self._show(chat_id, message_id, text)
+            return
+        lines = ["<b>Кто ещё пользуется ботом:</b>", ""]
+        lines += [f"• {escape(name)} — направлений: {self.storage.count_routes(user_id)}" for user_id, name in users]
+        lines += ["", "Чтобы закрыть доступ, нажмите кнопку с именем."]
+        rows = [[(f"🚫 {name}", f"rm:{user_id}")] for user_id, name in users]
+        self._show(chat_id, message_id, "\n".join(lines), inline_keyboard(rows))
 
     # --- список направлений
 
@@ -510,7 +578,7 @@ class Bot:
         for route in routes:
             try:
                 found += len(
-                    check_route(route, self.source, self.storage, self.api, self.currency, self.places.name)
+                    check_route(route, self.source, self.storage, self.api, self.currency, self.places)
                 )
             except (SourceError, NotifyError) as e:
                 failed += 1
