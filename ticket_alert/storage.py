@@ -28,7 +28,10 @@ CREATE TABLE IF NOT EXISTS routes (
     departure TEXT NOT NULL,
     max_price INTEGER NOT NULL,
     direct_only INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    min_days INTEGER,
+    max_days INTEGER,
+    smart INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS chats (
     chat_id INTEGER PRIMARY KEY,
@@ -40,7 +43,22 @@ CREATE TABLE IF NOT EXISTS users (
     status TEXT NOT NULL,  -- pending, allowed или rejected
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS best_prices (
+    route_key TEXT NOT NULL,
+    scope TEXT NOT NULL,  -- город для «куда угодно», иначе *
+    price INTEGER NOT NULL,
+    PRIMARY KEY (route_key, scope)
+);
 """
+
+# Колонки, добавленные после первой версии: старую базу дополняем, а не пересоздаём.
+_ROUTE_COLUMNS = {
+    "min_days": "INTEGER",
+    "max_days": "INTEGER",
+    "smart": "INTEGER NOT NULL DEFAULT 0",
+}
+
+_ROUTE_FIELDS = "id, chat_id, origin, destination, departure, max_price, direct_only, min_days, max_days, smart"
 
 
 def _now() -> str:
@@ -51,6 +69,10 @@ class Storage:
     def __init__(self, path: str | Path) -> None:
         self.conn = sqlite3.connect(str(path))
         self.conn.executescript(_SCHEMA)
+        existing = {row[1] for row in self.conn.execute("PRAGMA table_info(routes)")}
+        for column, kind in _ROUTE_COLUMNS.items():
+            if column not in existing:
+                self.conn.execute(f"ALTER TABLE routes ADD COLUMN {column} {kind}")
         self.conn.commit()
 
     # --- направления
@@ -58,8 +80,9 @@ class Storage:
     def add_route(self, route: Route) -> Route:
         cursor = self.conn.execute(
             """
-            INSERT INTO routes (chat_id, origin, destination, departure, max_price, direct_only, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO routes (chat_id, origin, destination, departure, max_price, direct_only,
+                                created_at, min_days, max_days, smart)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 route.chat_id,
@@ -69,13 +92,16 @@ class Storage:
                 route.max_price,
                 int(route.direct_only),
                 _now(),
+                route.min_days,
+                route.max_days,
+                int(route.smart),
             ),
         )
         self.conn.commit()
         return replace(route, id=cursor.lastrowid)
 
     def routes(self, chat_id: int | None = None) -> list[Route]:
-        query = "SELECT id, chat_id, origin, destination, departure, max_price, direct_only FROM routes"
+        query = f"SELECT {_ROUTE_FIELDS} FROM routes"
         args: tuple = ()
         if chat_id is not None:
             query += " WHERE chat_id = ?"
@@ -90,6 +116,9 @@ class Storage:
                 departure=row[4],
                 max_price=row[5],
                 direct_only=bool(row[6]),
+                min_days=row[7],
+                max_days=row[8],
+                smart=bool(row[9]),
             )
             for row in rows
         ]
@@ -102,7 +131,8 @@ class Storage:
             "DELETE FROM routes WHERE id = ? AND chat_id = ?", (route_id, chat_id)
         )
         if cursor.rowcount:
-            self.conn.execute("DELETE FROM notified WHERE route_key = ?", (f"route:{route_id}",))
+            for table in ("notified", "best_prices"):
+                self.conn.execute(f"DELETE FROM {table} WHERE route_key = ?", (f"route:{route_id}",))
         self.conn.commit()
         return cursor.rowcount > 0
 
@@ -183,6 +213,21 @@ class Storage:
                 (route_key, key, o.price, o.departure_at.date().isoformat(), now)
                 for key, o in offers
             ],
+        )
+        self.conn.commit()
+
+    def best_price(self, route_key: str, scope: str) -> int | None:
+        row = self.conn.execute(
+            "SELECT price FROM best_prices WHERE route_key = ? AND scope = ?", (route_key, scope)
+        ).fetchone()
+        return row[0] if row else None
+
+    def update_best(self, route_key: str, prices: dict[str, int]) -> None:
+        """Запоминает самую низкую увиденную цену по каждому scope."""
+        self.conn.executemany(
+            "INSERT INTO best_prices (route_key, scope, price) VALUES (?, ?, ?) "
+            "ON CONFLICT (route_key, scope) DO UPDATE SET price = MIN(price, excluded.price)",
+            [(route_key, scope, price) for scope, price in prices.items()],
         )
         self.conn.commit()
 

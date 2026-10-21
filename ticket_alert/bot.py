@@ -10,9 +10,10 @@ from datetime import date
 from html import escape
 from typing import Any, Callable
 
-from .checker import PriceSource, check_route, relevant_offers
+from .checker import PriceSource, check_route, relevant_offers, typical_price
 from .dates import describe_departure, is_expired, parse_departure, upcoming_months
 from .formatting import (
+    about_price,
     cheapest_by_destination,
     currency_symbol,
     describe_route,
@@ -20,7 +21,7 @@ from .formatting import (
     format_price,
     route_title,
 )
-from .models import Offer, Route
+from .models import SMART_DISCOUNT, Offer, Route
 from .places import POPULAR_DESTINATIONS, POPULAR_ORIGINS, Places
 from .storage import Storage
 from .telegram import Button, NotifyError, TelegramAPI, inline_keyboard
@@ -50,7 +51,9 @@ COMMANDS = [
 
 HELP = (
     "Я слежу за ценами на авиабилеты и пишу, когда появляется билет не дороже вашего бюджета.\n\n"
-    f"{MENU_ADD} — выбрать, откуда и куда лететь (можно «🌍 куда угодно за границу»), месяц и бюджет. "
+    f"{MENU_ADD} — выбрать, откуда и куда лететь (можно «🌍 куда угодно за границу»), месяц, "
+    "в одну сторону или туда-обратно, и бюджет. Вместо бюджета можно выбрать «🧠 только выгодные цены» — "
+    "тогда я сам слежу за обычной ценой и пишу, когда билет заметно дешевле. "
     "Направлений может быть несколько.\n"
     f"{MENU_LIST} — посмотреть и удалить направления.\n"
     f"{MENU_CHEAP} — самые дешёвые билеты из вашего города за границу.\n"
@@ -59,6 +62,14 @@ HELP = (
 )
 
 ANYWHERE = "*"
+
+# Поездка туда-обратно: (минимум дней, максимум дней, надпись на кнопке).
+TRIPS = {
+    "weekend": (2, 4, "🔁 Выходные, 2–4 дня"),
+    "week": (5, 9, "🔁 Неделя, 5–9 дней"),
+    "two": (10, 16, "🔁 Две недели, 10–16 дней"),
+    "any": (2, 30, "🔁 Туда-обратно, любой срок"),
+}
 MAX_ROUTES_PER_CHAT = 20
 CANCEL_BUTTON: Button = ("✖ Отмена", "x")
 
@@ -67,6 +78,7 @@ _CALLBACK_STEPS = {
     "o": "origin",
     "d": "destination",
     "m": "month",
+    "t": "trip",
     "b": "budget",
     "s": "confirm",
     "w": "results",
@@ -233,8 +245,13 @@ class Bot:
             self._set_destination(chat_id, dialog, None if value == ANYWHERE else value, message_id)
         elif kind == "m":
             self._set_departure(chat_id, dialog, value, message_id)
+        elif kind == "t":
+            return self._set_trip(chat_id, dialog, value, message_id)
         elif kind == "b":
-            self._set_budget(chat_id, dialog, int(value), message_id)
+            if value == "smart":
+                self._set_smart(chat_id, dialog, message_id)
+            else:
+                self._set_budget(chat_id, dialog, int(value), message_id)
         elif kind == "s":
             self._save(chat_id, dialog, value == "direct", message_id)
         elif kind == "w":
@@ -361,6 +378,30 @@ class Bot:
         self, chat_id: int, dialog: dict[str, Any], value: str, message_id: int | None = None
     ) -> None:
         dialog["departure"] = value
+        if dialog.get("trip_chosen"):  # «другой месяц» в подборке — длительность уже знаем
+            self._after_trip(chat_id, dialog, message_id)
+            return
+        dialog["step"] = "trip"
+        text = (
+            f"{self._draft_title(dialog)}, {escape(describe_departure(value))}\n\n"
+            "В одну сторону или туда-обратно?"
+        )
+        rows = [[("➡️ В одну сторону", "t:oneway")]]
+        rows += [[(label, f"t:{key}")] for key, (_, _, label) in TRIPS.items()]
+        self._show(chat_id, message_id, text, inline_keyboard(rows + [[CANCEL_BUTTON]]))
+
+    def _set_trip(self, chat_id: int, dialog: dict[str, Any], value: str, message_id: int | None) -> str | None:
+        if value == "oneway":
+            dialog["min_days"] = dialog["max_days"] = None
+        elif value in TRIPS:
+            dialog["min_days"], dialog["max_days"], _ = TRIPS[value]
+        else:
+            return "Это меню устарело — начните заново"
+        dialog["trip_chosen"] = True
+        self._after_trip(chat_id, dialog, message_id)
+        return None
+
+    def _after_trip(self, chat_id: int, dialog: dict[str, Any], message_id: int | None) -> None:
         if dialog["mode"] == "cheap":
             self._show_cheapest(chat_id, dialog, message_id)
         else:
@@ -374,6 +415,9 @@ class Bot:
             departure=dialog["departure"],
             max_price=dialog.get("max_price", 0),
             chat_id=chat_id,
+            min_days=dialog.get("min_days"),
+            max_days=dialog.get("max_days"),
+            smart=dialog.get("smart", False),
         )
 
     def _search(self, route: Route) -> list[Offer] | None:
@@ -395,12 +439,23 @@ class Bot:
         if offers:
             cheapest = min(offers, key=lambda o: o.price)
             where = f"{escape(self.places.name(cheapest.destination))}, " if route.anywhere else ""
+            dates = f"{cheapest.departure_at:%d.%m}"
+            if cheapest.return_at:
+                dates += f"–{cheapest.return_at:%d.%m}"
+            typical = None if route.anywhere else typical_price(offers)
+            usually = f"\nОбычно на эти даты — {about_price(typical, self.currency)}." if typical else ""
+            smart_hint = (
+                f"\n🧠 «Только выгодные» — я сам слежу за обычной ценой и пишу, "
+                f"когда билет дешевле неё хотя бы на {SMART_DISCOUNT}%."
+                if typical
+                else ""
+            )
             text = (
                 f"{title}\n\n"
                 f"Сейчас самый дешёвый билет: <b>{format_price(cheapest.price, self.currency)}</b>, "
-                f"{where}{cheapest.departure_at:%d.%m}.\n\n"
+                f"{where}{dates}.{usually}\n\n"
                 "Напишу, когда появится билет не дороже вашего бюджета. "
-                f"Выберите бюджет или напишите сумму в {symbol}:"
+                f"Выберите бюджет или напишите сумму в {symbol}:{smart_hint}"
             )
             buttons = [
                 (f"до {format_price(amount, self.currency)} (−{percent}%)", f"b:{amount}")
@@ -408,6 +463,8 @@ class Bot:
             ]
             buttons.append((f"до {format_price(cheapest.price, self.currency)} (уже есть)", f"b:{cheapest.price}"))
             rows = _rows(buttons, 2)
+            if typical:
+                rows.insert(0, [("🧠 Только выгодные цены", "b:smart")])
         elif offers is None:
             text = f"{title}\n\nНе получилось узнать текущие цены. Напишите бюджет в {symbol}, например 60000:"
         else:
@@ -418,7 +475,14 @@ class Bot:
         self._show(chat_id, message_id, text, inline_keyboard(rows + [[CANCEL_BUTTON]]))
 
     def _set_budget(self, chat_id: int, dialog: dict[str, Any], amount: int, message_id: int | None = None) -> None:
-        dialog["max_price"] = amount
+        dialog.update(max_price=amount, smart=False)
+        self._ask_confirm(chat_id, dialog, message_id)
+
+    def _set_smart(self, chat_id: int, dialog: dict[str, Any], message_id: int | None = None) -> None:
+        dialog.update(max_price=0, smart=True)
+        self._ask_confirm(chat_id, dialog, message_id)
+
+    def _ask_confirm(self, chat_id: int, dialog: dict[str, Any], message_id: int | None = None) -> None:
         dialog["step"] = "confirm"
         route = self._draft_route(dialog)
         text = f"Следить за направлением?\n\n<b>{escape(describe_route(route, self.places.name, self.currency))}</b>"
@@ -444,7 +508,11 @@ class Bot:
         route = self.storage.add_route(replace(self._draft_route(dialog, chat_id), direct_only=direct_only))
         text = (
             f"✅ Слежу: <b>{escape(describe_route(route, self.places.name, self.currency))}</b>\n"
-            "Напишу, как только найду билет не дороже бюджета."
+            + (
+                "Напишу, как только цена будет заметно ниже обычной."
+                if route.smart
+                else "Напишу, как только найду билет не дороже бюджета."
+            )
         )
         self._show(chat_id, message_id, text, inline_keyboard([[("➕ Ещё направление", "add")]]))
         # Если подходящие билеты уже есть — присылаем сразу, не дожидаясь плановой проверки.
@@ -457,14 +525,14 @@ class Bot:
 
     def _show_cheapest(self, chat_id: int, dialog: dict[str, Any], message_id: int | None = None) -> None:
         dialog["step"] = "results"
-        route = Route(dialog["origin"], None, dialog["departure"], 0)
+        route = replace(self._draft_route(dialog), destination=None)
         offers = self._search(route)
         if offers is not None:
             offers = relevant_offers(route, offers, self.places)
         if offers is None:
             text = "Не получилось получить цены, попробуйте чуть позже."
         else:
-            text = format_cheapest(route.origin, route.departure, offers, self.currency, self.places.name)
+            text = format_cheapest(route, offers, self.currency, self.places.name)
         rows: list[list[Button]] = [[("📅 Другой месяц", "r")]]
         if offers and cheapest_by_destination(offers):
             rows.insert(0, [("🔔 Следить за дешёвыми билетами за границу", "w")])

@@ -1,5 +1,6 @@
 import unittest
-from datetime import date
+from dataclasses import replace
+from datetime import date, timedelta
 
 from ticket_alert.bot import (
     MAX_ROUTES_PER_CHAT,
@@ -41,13 +42,22 @@ class BotTestCase(unittest.TestCase):
     @staticmethod
     def offers(route):
         if route.destination is None:
-            return [
+            base = [
                 make_offer(15000, day=2, destination="CIT"),  # внутренний рейс — не показываем
                 make_offer(22000, day=7, destination="TAS"),
                 make_offer(25000, day=3, destination="DXB", transfers=1),
                 make_offer(58802, day=4, destination="IST"),
             ]
-        return [make_offer(58802, day=4), make_offer(61000, day=9)]
+        else:
+            base = [make_offer(p, day=d) for p, d in ((58802, 4), (61000, 9), (64000, 10), (66000, 12), (70000, 15))]
+        if not route.round_trip:
+            return base
+        # Туда-обратно: поездки на 3 дня (+20 000) и на 7 дней (+30 000).
+        return [
+            replace(o, price=o.price + extra, return_at=o.departure_at + timedelta(days=length))
+            for o in base
+            for length, extra in ((3, 20000), (7, 30000))
+        ]
 
     def send(self, *updates):
         for update in updates:
@@ -75,6 +85,10 @@ class AddRouteTest(BotTestCase):
         self.assertIn(("Декабрь 2026", "m:2026-12"), self.api.buttons())
 
         self.send(callback("m:2026-12"))
+        self.assertIn("В одну сторону или туда-обратно?", self.api.last["text"])
+        self.assertIn(("🔁 Неделя, 5–9 дней", "t:week"), self.api.buttons())
+
+        self.send(callback("t:oneway"))
         self.assertIn("58 802 ₸", self.api.last["text"])
         self.assertIn(("до 52 000 ₸ (−10%)", "b:52000"), self.api.buttons())
         self.assertIn(("до 58 802 ₸ (уже есть)", "b:58802"), self.api.buttons())
@@ -95,7 +109,7 @@ class AddRouteTest(BotTestCase):
 
     def test_add_anywhere_route_by_typing(self):
         self.send(message(MENU_ADD), message("алматы"), callback("d:*"))
-        self.send(message("декабрь"))
+        self.send(message("декабрь"), callback("t:oneway"))
         self.assertIn("Сейчас самый дешёвый билет: <b>22 000 ₸</b>, Ташкент, 07.12.", self.api.last["text"])
 
         self.send(message("30к"))
@@ -127,7 +141,7 @@ class AddRouteTest(BotTestCase):
     def test_bad_date_and_amount(self):
         self.send(message(MENU_ADD), callback("o:ALA"), callback("d:IST"), message("вчера"))
         self.assertIn("Не понял дату", self.api.last["text"])
-        self.send(message("05.12"), message("дёшево"))
+        self.send(message("05.12"), callback("t:oneway"), message("дёшево"))
         self.assertIn("Напишите сумму числом", self.api.last["text"])
         self.send(message("40 000 ₸"), callback("s:all"))
         self.assertEqual(self.storage.routes(OWNER)[0].departure, "2026-12-05")
@@ -141,10 +155,58 @@ class AddRouteTest(BotTestCase):
     def test_route_limit(self):
         for _ in range(MAX_ROUTES_PER_CHAT):
             self.storage.add_route(make_route(chat_id=OWNER))
-        self.send(message(MENU_ADD), callback("o:ALA"), callback("d:IST"), callback("m:2026-12"))
+        self.send(message(MENU_ADD), callback("o:ALA"), callback("d:IST"), callback("m:2026-12"), callback("t:oneway"))
         self.send(callback("b:52000"), callback("s:all"))
         self.assertIn("удалите лишние", self.api.last["text"])
         self.assertEqual(self.storage.count_routes(OWNER), MAX_ROUTES_PER_CHAT)
+
+
+class RoundTripAndSmartTest(BotTestCase):
+    def test_round_trip_route(self):
+        self.send(message(MENU_ADD), callback("o:ALA"), callback("d:IST"), callback("m:2026-12"), callback("t:week"))
+        text = self.api.last["text"]
+        self.assertIn("Алматы ⇄ Стамбул, декабрь 2026, туда-обратно на 5–9 дней", text)
+        self.assertIn("Сейчас самый дешёвый билет: <b>88 802 ₸</b>, 04.12–11.12.", text)
+        self.assertIn("Обычно на эти даты — около 94 000 ₸.", text)
+
+        self.send(callback("b:88802"), callback("s:all"))
+        route = self.storage.routes(OWNER)[0]
+        self.assertEqual((route.min_days, route.max_days, route.max_price), (5, 9, 88802))
+        self.assertIn("04.12 05:45 → 11.12 (7 дней)", self.api.last["text"])
+        self.assertNotIn("(3 дня)", self.api.last["text"])
+
+    def test_smart_mode(self):
+        self.send(message(MENU_ADD), callback("o:ALA"), callback("d:IST"), callback("m:2026-12"), callback("t:oneway"))
+        self.assertIn(("🧠 Только выгодные цены", "b:smart"), self.api.buttons())
+
+        self.send(callback("b:smart"))
+        self.assertIn("только выгодные цены (от −15% к обычной)", self.api.last["text"])
+        self.send(callback("s:all"))
+        route = self.storage.routes(OWNER)[0]
+        self.assertTrue(route.smart)
+        self.assertIn("✅ Слежу", self.api.last["text"])  # 58 802 не на 15% ниже обычной 64 000
+
+        # Цена упала — бот замечает сам, без бюджета.
+        self.source.offers = lambda r: [make_offer(50000, day=4)] + self.offers(r)[1:]
+        self.send(message(MENU_CHECK))
+        alert = self.api.last["text"]
+        self.assertIn("Выгодные цены — обычно на эти даты около 64 000 ₸", alert)
+        self.assertIn("−22% к обычной цене", alert)
+        self.assertIn("🔥", alert)  # дешевле всего, что бот видел раньше
+
+    def test_no_smart_mode_for_anywhere(self):
+        self.send(message(MENU_ADD), callback("o:ALA"), callback("d:*"), callback("m:2026-12"), callback("t:oneway"))
+        self.assertNotIn(("🧠 Только выгодные цены", "b:smart"), self.api.buttons())
+
+    def test_cheapest_round_trips_and_subscribe(self):
+        self.send(message(MENU_CHEAP), callback("o:ALA"), callback("m:2026-12"), callback("t:weekend"))
+        text = self.api.last["text"]
+        self.assertIn("за границу из Алматы, декабрь 2026, туда-обратно на 2–4 дня", text)
+        self.assertIn("Ташкент — <b>42 000 ₸</b>, 07.12 05:45 → 10.12 (3 дня)", text)
+
+        self.send(callback("w"), callback("b:45000"), callback("s:all"))
+        route = self.storage.routes(OWNER)[0]
+        self.assertEqual((route.destination, route.min_days, route.max_days), (None, 2, 4))
 
 
 class CheapestTest(BotTestCase):
@@ -152,7 +214,7 @@ class CheapestTest(BotTestCase):
         self.send(message(MENU_CHEAP), callback("o:ALA"))
         self.assertIn("Из Алматы за границу", self.api.last["text"])
 
-        self.send(callback("m:2026-12"))
+        self.send(callback("m:2026-12"), callback("t:oneway"))
         text = self.api.last["text"]
         self.assertIn("Самые дешёвые билеты за границу из Алматы, декабрь 2026", text)
         self.assertLess(text.index("Ташкент"), text.index("Дубай"))
@@ -166,7 +228,7 @@ class CheapestTest(BotTestCase):
         self.assertEqual((route.destination, route.max_price), (None, 18000))
 
     def test_other_month(self):
-        self.send(message(MENU_CHEAP), callback("o:ALA"), callback("m:2026-12"), callback("r"))
+        self.send(message(MENU_CHEAP), callback("o:ALA"), callback("m:2026-12"), callback("t:oneway"), callback("r"))
         self.assertIn("Когда летим?", self.api.last["text"])
         self.send(callback("m:2027-01"))
         self.assertEqual(self.source.searches[-1].departure, "2027-01")
@@ -236,7 +298,7 @@ class AccessTest(BotTestCase):
         self.assertIn("Доступ открыт", self.messages_to(BROTHER)[-1])
 
         self.send(message(MENU_ADD, chat_id=BROTHER), callback("o:NQZ", chat_id=BROTHER))
-        self.send(callback("d:IST", chat_id=BROTHER), callback("m:2026-12", chat_id=BROTHER))
+        self.send(callback("d:IST", chat_id=BROTHER), callback("m:2026-12", chat_id=BROTHER), callback("t:oneway", chat_id=BROTHER))
         self.send(callback("b:50000", chat_id=BROTHER), callback("s:all", chat_id=BROTHER))
         self.assertEqual(len(self.storage.routes(BROTHER)), 1)
         self.assertEqual(self.storage.routes(OWNER), [])
@@ -287,7 +349,7 @@ class AccessTest(BotTestCase):
     def test_errors_do_not_stop_the_bot(self):
         self.source.error = RuntimeError("boom")
         with self.assertLogs("ticket_alert.bot", "ERROR"):
-            self.send(message(MENU_ADD), callback("o:ALA"), callback("d:IST"), callback("m:2026-12"))
+            self.send(message(MENU_ADD), callback("o:ALA"), callback("d:IST"), callback("m:2026-12"), callback("t:oneway"))
         self.assertEqual(self.api.answers[-1], ("cb", None))
 
 

@@ -5,7 +5,7 @@ from io import BytesIO
 from ticket_alert.travelpayouts import (
     SourceError,
     TravelpayoutsClient,
-    build_params,
+    build_queries,
     parse_offers,
     partner_link,
 )
@@ -38,7 +38,7 @@ SAMPLE = {
 
 class TravelpayoutsTest(unittest.TestCase):
     def test_params_for_one_city(self):
-        params = build_params(make_route(direct_only=True), "kzt", "kz")
+        [params] = build_queries(make_route(direct_only=True), "kzt", "kz")
         self.assertEqual(params["destination"], "IST")
         self.assertEqual(params["one_way"], "true")
         self.assertEqual(params["direct"], "true")
@@ -46,10 +46,30 @@ class TravelpayoutsTest(unittest.TestCase):
         self.assertEqual(params["market"], "kz")
 
     def test_params_for_anywhere(self):
-        params = build_params(make_route(destination=None), "kzt", "kz")
+        [params] = build_queries(make_route(destination=None), "kzt", "kz")
         self.assertNotIn("destination", params)
         self.assertEqual(params["unique"], "true")
         self.assertEqual(params["origin"], "ALA")
+
+    def test_params_for_round_trip(self):
+        [params] = build_queries(make_route(min_days=5, max_days=9), "kzt", "kz")
+        self.assertEqual(params["one_way"], "false")
+        self.assertNotIn("return_at", params)
+        self.assertEqual(params["limit"], "1000")
+        queries = build_queries(make_route(destination=None, min_days=2, max_days=4), "kzt", "kz")
+        self.assertEqual([q["unique"] for q in queries], ["true", "false"])
+
+    def test_parse_round_trip(self):
+        row = {**SAMPLE["data"][0], "return_at": "2026-12-11T18:00:00+03:00", "return_transfers": 1}
+        [offer] = parse_offers({"success": True, "data": [row]})
+        self.assertEqual((offer.trip_days, offer.return_transfers), (7, 1))
+
+    def test_search_merges_several_queries(self):
+        urlopen = FakeUrlopen(FakeResponse(SAMPLE), FakeResponse(SAMPLE))
+        client = TravelpayoutsClient("t", urlopen=urlopen)
+        offers = client.search(make_route(destination=None, min_days=2, max_days=4))
+        self.assertEqual(len(urlopen.requests), 2)
+        self.assertEqual(len(offers), 2)
 
     def test_parse_skips_broken_rows_and_builds_link(self):
         offers = parse_offers(SAMPLE, "https://www.aviasales.kz")

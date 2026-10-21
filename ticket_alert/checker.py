@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import statistics
+from dataclasses import dataclass, replace
 from datetime import date
 from html import escape
 from typing import Iterable, Protocol
 
 from .dates import is_expired
 from .formatting import describe_route, format_alert
-from .models import Deal, Offer, Route
+from .models import SMART_DISCOUNT, Deal, Offer, Route
 from .storage import Storage
 from .telegram import Notifier, NotifyError
 from .travelpayouts import SourceError
@@ -31,10 +32,40 @@ class Directory(Protocol):
 
 
 def relevant_offers(route: Route, offers: Iterable[Offer], places: Directory) -> list[Offer]:
-    """«Куда угодно» означает за границу: внутренние рейсы своей страны не показываем."""
-    if not route.anywhere:
-        return list(offers)
-    return [o for o in offers if not places.same_country(route.origin, o.destination)]
+    """Отбирает билеты, которые подходят направлению.
+
+    «Куда угодно» означает за границу: внутренние рейсы своей страны не показываем.
+    Для туда-обратно оставляем только поездки нужной длительности.
+    """
+    result = []
+    for offer in offers:
+        if route.anywhere and places.same_country(route.origin, offer.destination):
+            continue
+        days = offer.trip_days
+        if route.round_trip and (days is None or not route.min_days <= days <= route.max_days):
+            continue
+        if not route.round_trip and days is not None:
+            continue
+        result.append(offer)
+    return result
+
+
+def typical_price(offers: Iterable[Offer]) -> int | None:
+    """Обычная цена: медиана самых дешёвых билетов по каждой дате вылета.
+
+    Нужна хотя бы на 4 дня, иначе сравнивать не с чем.
+    """
+    by_date: dict[date, int] = {}
+    for offer in offers:
+        day = offer.departure_at.date()
+        by_date[day] = min(offer.price, by_date.get(day, offer.price))
+    if len(by_date) < 4:
+        return None
+    return round(statistics.median(by_date.values()))
+
+
+def smart_limit(typical: int) -> int:
+    return typical * (100 - SMART_DISCOUNT) // 100
 
 
 @dataclass(frozen=True)
@@ -48,15 +79,32 @@ def deal_key(route: Route, offer: Offer) -> str:
     # иначе смена самой дешёвой даты присылала бы город повторно.
     if route.anywhere:
         return offer.destination
-    return offer.departure_at.date().isoformat()
+    key = offer.departure_at.date().isoformat()
+    if offer.return_at:
+        key += f"|{offer.return_at.date().isoformat()}"
+    return key
 
 
-def find_deals(route: Route, offers: Iterable[Offer], storage: Storage) -> list[Deal]:
+def _scope(route: Route, offer: Offer) -> str:
+    """По чему считаем «самую низкую цену»: по каждому городу или по направлению целиком."""
+    return offer.destination if route.anywhere else "*"
+
+
+def find_deals(
+    route: Route, offers: Iterable[Offer], storage: Storage, typical: int | None = None
+) -> list[Deal]:
+    if route.smart:
+        if typical is None:
+            return []
+        limit = smart_limit(typical)
+    else:
+        limit = route.max_price
+
     cheapest: dict[str, Offer] = {}
     for offer in offers:
-        if offer.price > route.max_price:
+        if offer.price > limit:
             continue
-        if route.direct_only and offer.transfers:
+        if route.direct_only and (offer.transfers or offer.return_transfers):
             continue
         key = deal_key(route, offer)
         current = cheapest.get(key)
@@ -67,7 +115,7 @@ def find_deals(route: Route, offers: Iterable[Offer], storage: Storage) -> list[
     for key, offer in cheapest.items():
         previous = storage.last_price(route.key, key)
         if previous is None or offer.price < previous:
-            deals.append(Deal(offer, previous))
+            deals.append(Deal(offer, previous, typical))
     deals.sort(key=lambda d: (d.offer.price, d.offer.departure_at))
     return deals
 
@@ -82,17 +130,31 @@ def check_route(
     dry_run: bool = False,
 ) -> list[Deal]:
     offers = relevant_offers(route, source.search(route), places)
-    deals = find_deals(route, offers, storage)
-    title = describe_route(route, places.name, currency)
-    if not deals:
-        log.info("%s: новых дешёвых билетов нет", title)
-        return deals
+    typical = None if route.anywhere else typical_price(offers)
+    deals = find_deals(route, offers, storage, typical)
 
-    notifier.send(route.chat_id, format_alert(route, deals, currency, places.name))
+    # Самая низкая цена по каждому scope в этой проверке — для отметки 🔥 «рекорд».
+    lowest: dict[str, int] = {}
+    for offer in offers:
+        scope = _scope(route, offer)
+        lowest[scope] = min(offer.price, lowest.get(scope, offer.price))
+    marked = []
+    for deal in deals:
+        best = storage.best_price(route.key, _scope(route, deal.offer))
+        marked.append(replace(deal, record=best is not None and deal.offer.price < best))
+    deals = marked
+
+    title = describe_route(route, places.name, currency)
+    if deals:
+        notifier.send(route.chat_id, format_alert(route, deals, currency, places.name))
+        log.info("%s: найдено вариантов — %d", title, len(deals))
+    else:
+        log.info("%s: новых дешёвых билетов нет", title)
+
     # Запоминаем только после успешной отправки, иначе оповещение потеряется.
     if not dry_run:
         storage.remember(route.key, [(deal_key(route, d.offer), d.offer) for d in deals])
-    log.info("%s: найдено вариантов — %d", title, len(deals))
+        storage.update_best(route.key, lowest)
     return deals
 
 

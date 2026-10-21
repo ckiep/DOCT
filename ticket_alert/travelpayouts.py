@@ -39,11 +39,14 @@ class SourceError(Exception):
     """Не удалось получить цены."""
 
 
-def build_params(route: Route, currency: str, market: str) -> dict[str, str]:
-    params = {
+def build_queries(route: Route, currency: str, market: str) -> list[dict[str, str]]:
+    """Параметры запросов к API; результаты всех запросов складываются вместе."""
+    base = {
         "origin": route.origin,
         "departure_at": route.departure,
-        "one_way": "true",
+        # Без return_at и с one_way=false API отдаёт билеты туда-обратно на любой срок,
+        # нужную длительность поездки отбираем сами.
+        "one_way": "false" if route.round_trip else "true",
         "direct": "true" if route.direct_only else "false",
         "sorting": "price",
         "currency": currency,
@@ -51,11 +54,15 @@ def build_params(route: Route, currency: str, market: str) -> dict[str, str]:
         "page": "1",
     }
     if route.destination:
-        params.update(destination=route.destination, unique="false", limit="100")
-    else:
-        # Без города назначения API отдаёт самый дешёвый билет в каждый город.
-        params.update(unique="true", limit="1000")
-    return params
+        limit = "1000" if route.round_trip else "100"
+        return [{**base, "destination": route.destination, "unique": "false", "limit": limit}]
+    # Без города назначения unique=true даёт самый дешёвый билет в каждый город.
+    queries = [{**base, "unique": "true", "limit": "1000"}]
+    if route.round_trip:
+        # Самый дешёвый билет в город может оказаться не той длительности —
+        # добавляем просто самые дешёвые варианты, чтобы было из чего выбирать.
+        queries.append({**base, "unique": "false", "limit": "1000"})
+    return queries
 
 
 def parse_offers(
@@ -67,6 +74,7 @@ def parse_offers(
     offers = []
     for item in payload.get("data") or []:
         try:
+            return_at = item.get("return_at")
             offers.append(
                 Offer(
                     origin=item.get("origin") or "",
@@ -77,6 +85,8 @@ def parse_offers(
                     flight_number=str(item.get("flight_number") or ""),
                     transfers=int(item.get("transfers") or 0),
                     link=partner_link(site, item.get("link") or "", marker),
+                    return_at=datetime.fromisoformat(return_at) if return_at else None,
+                    return_transfers=int(item.get("return_transfers") or 0),
                 )
             )
         except (KeyError, TypeError, ValueError):
@@ -110,7 +120,12 @@ class TravelpayoutsClient:
         self._cache: dict[str, tuple[float, list[Offer]]] = {}
 
     def search(self, route: Route) -> list[Offer]:
-        query = urllib.parse.urlencode(build_params(route, self.currency, self.market))
+        offers: list[Offer] = []
+        for params in build_queries(route, self.currency, self.market):
+            offers += self._fetch(urllib.parse.urlencode(params))
+        return offers
+
+    def _fetch(self, query: str) -> list[Offer]:
         cached = self._cache.get(query)
         if cached and self._clock() - cached[0] < self.cache_seconds:
             return cached[1]

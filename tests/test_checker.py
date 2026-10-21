@@ -1,7 +1,8 @@
 import unittest
-from datetime import date
+from dataclasses import replace
+from datetime import date, timedelta
 
-from ticket_alert.checker import check_route, find_deals, relevant_offers, run_once
+from ticket_alert.checker import check_route, deal_key, find_deals, relevant_offers, run_once, typical_price
 from ticket_alert.formatting import format_alert, format_cheapest
 from ticket_alert.models import Deal
 from ticket_alert.telegram import NotifyError
@@ -134,7 +135,48 @@ class RunOnceTest(unittest.TestCase):
         self.assertEqual(len(storage.routes()), 1)
 
 
+def round_trip(price, day=5, length=7, **overrides):
+    offer = make_offer(price, day=day, **overrides)
+    return replace(offer, return_at=offer.departure_at + timedelta(days=length))
+
+
+class SmartTest(unittest.TestCase):
+    def setUp(self):
+        self.storage = memory_storage(self)
+
+    def test_typical_price_needs_several_dates(self):
+        self.assertIsNone(typical_price([make_offer(1000, day=d) for d in (1, 2, 3)]))
+        offers = [make_offer(p, day=d) for p, d in ((50000, 1), (40000, 1), (60000, 2), (70000, 3), (90000, 4))]
+        self.assertEqual(typical_price(offers), 65000)  # медиана 40 000, 60 000, 70 000, 90 000
+
+    def test_smart_route_alerts_only_well_below_typical(self):
+        route = self.storage.add_route(make_route(max_price=0, smart=True))
+        offers = [make_offer(51000, day=1), make_offer(52000, day=2)]
+        self.assertEqual([d.offer.price for d in find_deals(route, offers, self.storage, typical=60000)], [51000])
+        self.assertEqual(find_deals(route, offers, self.storage, typical=None), [])
+
+    def test_record_low_is_marked(self):
+        route = self.storage.add_route(make_route(chat_id=7, max_price=60000))
+        notifier = FakeNotifier()
+        check_route(route, FakeSource([make_offer(58000, day=1)]), self.storage, notifier, "kzt", PLACES)
+        self.assertNotIn("🔥", notifier.messages[-1][1])  # первая проверка — сравнивать не с чем
+
+        check_route(route, FakeSource([make_offer(57000, day=2)]), self.storage, notifier, "kzt", PLACES)
+        self.assertIn("• 🔥", notifier.messages[-1][1])
+        self.assertIn("самая низкая цена с тех пор", notifier.messages[-1][1])
+
+    def test_round_trip_key_includes_return_date(self):
+        route = make_route(min_days=5, max_days=9)
+        self.assertEqual(deal_key(route, round_trip(1, day=5, length=7)), "2026-12-05|2026-12-12")
+
+
 class RelevantOffersTest(unittest.TestCase):
+    def test_round_trip_length(self):
+        route = make_route(min_days=5, max_days=9)
+        offers = [round_trip(1, length=3), round_trip(2, length=7), make_offer(3)]
+        self.assertEqual([o.price for o in relevant_offers(route, offers, PLACES)], [2])
+        self.assertEqual([o.price for o in relevant_offers(make_route(), offers, PLACES)], [3])
+
     def test_unknown_country_counts_as_abroad(self):
         route = make_route(destination=None)
         offers = [make_offer(1, destination="NQZ"), make_offer(2, destination="ZZZ"), make_offer(3, destination="IST")]
@@ -176,14 +218,23 @@ class FormattingTest(unittest.TestCase):
             make_offer(20000, day=7, destination="TAS"),
             make_offer(25000, day=9, destination="DXB"),
         ]
-        text = format_cheapest("ALA", "2026-12", offers, "kzt", names)
+        text = format_cheapest(make_route(destination=None), offers, "kzt", names)
         self.assertIn("Самые дешёвые билеты за границу из Алматы, декабрь 2026", text)
         self.assertLess(text.index("Ташкент"), text.index("Дубай"))
         self.assertIn("Дубай — <b>25 000 ₸</b>", text)
         self.assertNotIn("30 000", text)
 
+    def test_round_trip_and_smart_texts(self):
+        route = make_route(min_days=5, max_days=9, smart=True, max_price=0)
+        deal = Deal(round_trip(51000, return_transfers=1), None, typical_price=62000)
+        text = format_alert(route, [deal], "kzt", names)
+        self.assertIn("Алматы ⇄ Стамбул, декабрь 2026, туда-обратно на 5–9 дней", text)
+        self.assertIn("Выгодные цены — обычно на эти даты около 62 000 ₸", text)
+        self.assertIn("05.12 05:45 → 12.12 (7 дней) — <b>51 000 ₸</b>, −18% к обычной цене", text)
+        self.assertIn("туда прямой, обратно 1 пересадка", text)
+
     def test_cheapest_without_offers(self):
-        self.assertIn("Не нашёл билетов", format_cheapest("ALA", "2026-12", [], "kzt", names))
+        self.assertIn("Не нашёл билетов", format_cheapest(make_route(destination=None), [], "kzt", names))
 
 
 if __name__ == "__main__":
