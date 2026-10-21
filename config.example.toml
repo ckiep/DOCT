@@ -1,0 +1,42 @@
+# Скопируйте этот файл в config.toml и заполните.
+# config.toml не попадает в git (см. .gitignore), потому что в нём токены.
+
+[travelpayouts]
+# Бесплатный токен: зарегистрируйтесь на https://www.travelpayouts.com/,
+# затем Профиль → API-токен. Можно не писать здесь, а задать TRAVELPAYOUTS_TOKEN.
+token = ""
+currency = "rub"
+market = "ru"
+
+[telegram]
+# Токен бота от @BotFather (или переменная TELEGRAM_BOT_TOKEN).
+bot_token = ""
+# Ваш chat_id (или TELEGRAM_CHAT_ID). Как узнать — см. README.
+chat_id = ""
+
+[check]
+# Как часто проверять цены в режиме постоянной работы.
+interval_minutes = 60
+# Где хранить историю оповещений (путь относительно этого файла).
+state_file = "ticket_alert.db"
+
+# Маршруты: сколько угодно блоков [[routes]].
+# origin / destination — IATA-коды городов или аэропортов (MOW, LED, IST, AYT, DXB...).
+# departure / return — месяц (YYYY-MM) или конкретный день (YYYY-MM-DD).
+# Без return ищутся билеты в одну сторону.
+
+[[routes]]
+name = "Москва → Стамбул, декабрь"
+origin = "MOW"
+destination = "IST"
+departure = "2026-12"
+max_price = 12000
+
+[[routes]]
+name = "Питер → Сочи и обратно, только прямые"
+origin = "LED"
+destination = "AER"
+departure = "2027-01"
+return = "2027-01"
+max_price = 15000
+direct_only = true
