@@ -1,4 +1,4 @@
-"""Основная логика: найти дешёвые варианты и сообщить только о новых или подешевевших."""
+"""Проверка цен: найти дешёвые варианты и сообщить только о новых или подешевевших."""
 
 from __future__ import annotations
 
@@ -8,26 +8,18 @@ from datetime import date
 from html import escape
 from typing import Iterable, Protocol
 
-from .models import Offer, Route
-from .notifiers import Notifier, NotifyError
+from .dates import is_expired
+from .formatting import Names, describe_route, format_alert
+from .models import Deal, Offer, Route
 from .storage import Storage
+from .telegram import Notifier, NotifyError
 from .travelpayouts import SourceError
 
 log = logging.getLogger(__name__)
 
-MAX_ITEMS_PER_MESSAGE = 10
-
-CURRENCY_SYMBOLS = {"rub": "₽", "usd": "$", "eur": "€", "kzt": "₸", "uah": "₴", "byn": "Br"}
-
 
 class PriceSource(Protocol):
     def search(self, route: Route) -> list[Offer]: ...
-
-
-@dataclass(frozen=True)
-class Deal:
-    offer: Offer
-    previous_price: int | None  # цена из прошлого оповещения, если было
 
 
 @dataclass(frozen=True)
@@ -36,17 +28,25 @@ class RunSummary:
     failed_routes: int
 
 
+def deal_key(route: Route, offer: Offer) -> str:
+    # «Куда угодно»: следим за ценой в каждый город, а не за каждой датой,
+    # иначе смена самой дешёвой даты присылала бы город повторно.
+    if route.anywhere:
+        return offer.destination
+    return offer.departure_at.date().isoformat()
+
+
 def find_deals(route: Route, offers: Iterable[Offer], storage: Storage) -> list[Deal]:
-    # Самый дешёвый вариант на каждую комбинацию дат в пределах бюджета.
     cheapest: dict[str, Offer] = {}
     for offer in offers:
         if offer.price > route.max_price:
             continue
-        if route.direct_only and (offer.transfers or offer.return_transfers):
+        if route.direct_only and offer.transfers:
             continue
-        current = cheapest.get(offer.key)
+        key = deal_key(route, offer)
+        current = cheapest.get(key)
         if current is None or offer.price < current.price:
-            cheapest[offer.key] = offer
+            cheapest[key] = offer
 
     deals = []
     for key, offer in cheapest.items():
@@ -63,85 +63,57 @@ def check_route(
     storage: Storage,
     notifier: Notifier,
     currency: str,
+    names: Names,
     dry_run: bool = False,
 ) -> list[Deal]:
     deals = find_deals(route, source.search(route), storage)
+    title = describe_route(route, names, currency)
     if not deals:
-        log.info("%s: новых дешёвых билетов нет", route.name)
+        log.info("%s: новых дешёвых билетов нет", title)
         return deals
 
-    notifier.send(format_message(route, deals, currency))
+    notifier.send(route.chat_id, format_alert(route, deals, currency, names))
     # Запоминаем только после успешной отправки, иначе оповещение потеряется.
     if not dry_run:
-        storage.remember(route.key, [d.offer for d in deals])
-    log.info("%s: отправлено вариантов — %d", route.name, len(deals))
+        storage.remember(route.key, [(deal_key(route, d.offer), d.offer) for d in deals])
+    log.info("%s: найдено вариантов — %d", title, len(deals))
     return deals
 
 
 def run_once(
-    routes: Iterable[Route],
-    source: PriceSource,
     storage: Storage,
+    source: PriceSource,
     notifier: Notifier,
     currency: str,
+    names: Names,
     dry_run: bool = False,
     today: date | None = None,
 ) -> RunSummary:
-    if not dry_run:
-        storage.prune(today or date.today())
+    today = today or date.today()
+    if dry_run:
+        routes = [r for r in storage.routes() if not is_expired(r.departure, today)]
+    else:
+        for route in storage.delete_expired_routes(today):
+            _say_expired(route, notifier, currency, names)
+        storage.prune(today)
+        routes = storage.routes()
+
+    if not routes:
+        log.info("направлений пока нет — добавьте их в боте")
 
     found = failed = 0
     for route in routes:
         try:
-            found += len(check_route(route, source, storage, notifier, currency, dry_run))
+            found += len(check_route(route, source, storage, notifier, currency, names, dry_run))
         except (SourceError, NotifyError) as e:
             failed += 1
-            log.error("%s: %s", route.name, e)
+            log.error("%s: %s", describe_route(route, names, currency), e)
     return RunSummary(found, failed)
 
 
-def format_price(amount: int, currency: str) -> str:
-    symbol = CURRENCY_SYMBOLS.get(currency.lower(), currency.upper())
-    return f"{amount:,}".replace(",", " ") + f" {symbol}"
-
-
-def _stops(count: int) -> str:
-    if count == 0:
-        return "прямой"
-    if count == 1:
-        return "1 пересадка"
-    if count < 5:
-        return f"{count} пересадки"
-    return f"{count} пересадок"
-
-
-def format_deal(deal: Deal, currency: str) -> str:
-    offer = deal.offer
-    dates = offer.departure_at.strftime("%d.%m %H:%M")
-    if offer.return_at:
-        dates += " → " + offer.return_at.strftime("%d.%m")
-        stops = f"туда {_stops(offer.transfers)}, обратно {_stops(offer.return_transfers)}"
-    else:
-        stops = _stops(offer.transfers)
-
-    price = f"<b>{format_price(offer.price, currency)}</b>"
-    if deal.previous_price is not None:
-        price += f" (было {format_price(deal.previous_price, currency)})"
-
-    flight = escape(f"{offer.airline} {offer.flight_number}".strip())
-    link = escape(offer.link, quote=True)
-    return f'• {dates} — {price}, {stops}, {flight} — <a href="{link}">купить</a>'
-
-
-def format_message(
-    route: Route, deals: list[Deal], currency: str, limit: int = MAX_ITEMS_PER_MESSAGE
-) -> str:
-    lines = [
-        f"✈️ <b>{escape(route.name)}</b>",
-        f"Билеты не дороже {format_price(route.max_price, currency)}:",
-        "",
-    ]
-    lines += [format_deal(d, currency) for d in deals[:limit]]
-    if len(deals) > limit:
-        lines.append(f"…и ещё вариантов: {len(deals) - limit}")
-    return "\n".join(lines)
+def _say_expired(route: Route, notifier: Notifier, currency: str, names: Names) -> None:
+    text = f"Даты прошли, больше не слежу: {escape(describe_route(route, names, currency))}"
+    try:
+        notifier.send(route.chat_id, text)
+    except NotifyError as e:
+        log.error("не удалось сообщить об устаревшем направлении: %s", e)

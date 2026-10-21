@@ -1,5 +1,6 @@
 # Скопируйте этот файл в config.toml и заполните.
 # config.toml не попадает в git (см. .gitignore), потому что в нём токены.
+# Направления здесь не задаются — их добавляют кнопками прямо в боте.
 
 [travelpayouts]
 # Бесплатный токен: зарегистрируйтесь на https://www.travelpayouts.com/,
@@ -14,34 +15,16 @@ market = "kz"
 marker = ""
 
 [telegram]
-# Токен бота от @BotFather (или переменная TELEGRAM_BOT_TOKEN).
+# Токен бота от @BotFather, вида 1234567890:AAH... (или переменная TELEGRAM_BOT_TOKEN).
 bot_token = ""
-# Ваш chat_id (или TELEGRAM_CHAT_ID). Как узнать — см. README.
+# Ваш ID в Telegram — число, например 123456789 (или TELEGRAM_CHAT_ID).
+# Узнать можно у @userinfobot. Бот отвечает только этому пользователю.
 chat_id = ""
+# true — ботом может пользоваться кто угодно, у каждого свои направления.
+public = false
 
 [check]
-# Как часто проверять цены в режиме постоянной работы.
+# Как часто проверять цены.
 interval_minutes = 60
-# Где хранить историю оповещений (путь относительно этого файла).
+# Где хранить направления и историю оповещений (путь относительно этого файла).
 state_file = "ticket_alert.db"
-
-# Маршруты: сколько угодно блоков [[routes]].
-# origin / destination — IATA-коды городов или аэропортов (ALA, NQZ, CIT, IST, DXB...).
-# departure / return — месяц (YYYY-MM) или конкретный день (YYYY-MM-DD).
-# Без return ищутся билеты в одну сторону.
-
-[[routes]]
-name = "Алматы → Стамбул, декабрь"
-origin = "ALA"
-destination = "IST"
-departure = "2026-12"
-max_price = 90000
-
-[[routes]]
-name = "Астана → Алматы и обратно, только прямые"
-origin = "NQZ"
-destination = "ALA"
-departure = "2027-01"
-return = "2027-01"
-max_price = 50000
-direct_only = true

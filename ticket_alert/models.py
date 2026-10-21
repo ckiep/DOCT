@@ -6,38 +6,41 @@ from datetime import datetime
 
 @dataclass(frozen=True)
 class Route:
-    """Маршрут, за которым следим."""
+    """Направление, за которым следим. destination=None — «куда угодно»."""
 
-    name: str
     origin: str
-    destination: str
+    destination: str | None
     departure: str  # YYYY-MM или YYYY-MM-DD
     max_price: int
-    return_date: str | None = None  # YYYY-MM или YYYY-MM-DD; None — в одну сторону
     direct_only: bool = False
+    chat_id: int = 0
+    id: int | None = None
+
+    @property
+    def anywhere(self) -> bool:
+        return self.destination is None
 
     @property
     def key(self) -> str:
-        """Идентификатор маршрута для хранения истории оповещений."""
-        mode = "direct" if self.direct_only else "any"
-        return f"{self.origin}-{self.destination}:{self.departure}:{self.return_date or ''}:{mode}"
+        """Идентификатор для истории оповещений."""
+        return f"route:{self.id}"
 
 
 @dataclass(frozen=True)
 class Offer:
-    """Конкретное предложение (билет) из источника цен."""
+    """Конкретное предложение (билет в одну сторону) из источника цен."""
 
+    origin: str
+    destination: str
     price: int
     departure_at: datetime
     airline: str
     flight_number: str
     transfers: int
     link: str
-    return_at: datetime | None = None
-    return_transfers: int = 0
 
-    @property
-    def key(self) -> str:
-        """Предложения с одинаковыми датами считаем одним вариантом: следим за его ценой."""
-        back = self.return_at.date().isoformat() if self.return_at else ""
-        return f"{self.departure_at.date().isoformat()}|{back}"
+
+@dataclass(frozen=True)
+class Deal:
+    offer: Offer
+    previous_price: int | None  # цена из прошлого оповещения, если было

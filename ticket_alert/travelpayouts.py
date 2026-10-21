@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -38,22 +39,22 @@ class SourceError(Exception):
     """Не удалось получить цены."""
 
 
-def build_params(route: Route, currency: str, market: str, limit: int = 100) -> dict[str, str]:
+def build_params(route: Route, currency: str, market: str) -> dict[str, str]:
     params = {
         "origin": route.origin,
-        "destination": route.destination,
         "departure_at": route.departure,
-        "one_way": "false" if route.return_date else "true",
+        "one_way": "true",
         "direct": "true" if route.direct_only else "false",
         "sorting": "price",
-        "unique": "false",
         "currency": currency,
         "market": market,
-        "limit": str(limit),
         "page": "1",
     }
-    if route.return_date:
-        params["return_at"] = route.return_date
+    if route.destination:
+        params.update(destination=route.destination, unique="false", limit="100")
+    else:
+        # Без города назначения API отдаёт самый дешёвый билет в каждый город.
+        params.update(unique="true", limit="1000")
     return params
 
 
@@ -66,16 +67,15 @@ def parse_offers(
     offers = []
     for item in payload.get("data") or []:
         try:
-            return_at = item.get("return_at")
             offers.append(
                 Offer(
+                    origin=item.get("origin") or "",
+                    destination=item["destination"],
                     price=int(item["price"]),
                     departure_at=datetime.fromisoformat(item["departure_at"]),
-                    return_at=datetime.fromisoformat(return_at) if return_at else None,
                     airline=item.get("airline") or "",
                     flight_number=str(item.get("flight_number") or ""),
                     transfers=int(item.get("transfers") or 0),
-                    return_transfers=int(item.get("return_transfers") or 0),
                     link=partner_link(site, item.get("link") or "", marker),
                 )
             )
@@ -93,17 +93,28 @@ class TravelpayoutsClient:
         market: str = "kz",
         marker: str = "",
         timeout: float = 20,
+        cache_seconds: float = 600,
         urlopen: Callable[..., Any] = urllib.request.urlopen,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.token = token
         self.currency = currency
         self.market = market
         self.marker = marker
         self.timeout = timeout
+        self.cache_seconds = cache_seconds
         self._urlopen = urlopen
+        self._clock = clock
+        # Одинаковые запросы (подсказка бюджета, проверка сразу после сохранения)
+        # не гоняем в API повторно.
+        self._cache: dict[str, tuple[float, list[Offer]]] = {}
 
     def search(self, route: Route) -> list[Offer]:
         query = urllib.parse.urlencode(build_params(route, self.currency, self.market))
+        cached = self._cache.get(query)
+        if cached and self._clock() - cached[0] < self.cache_seconds:
+            return cached[1]
+
         request = urllib.request.Request(
             f"{API_URL}?{query}",
             headers={
@@ -129,4 +140,6 @@ class TravelpayoutsClient:
             payload = json.loads(body)
         except ValueError as e:
             raise SourceError("Travelpayouts вернул не JSON") from e
-        return parse_offers(payload, site_url(self.market), self.marker)
+        offers = parse_offers(payload, site_url(self.market), self.marker)
+        self._cache[query] = (self._clock(), offers)
+        return offers
