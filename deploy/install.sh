@@ -12,6 +12,18 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "Запустите от root: sudo bash deploy/install.sh"
   exit 1
 fi
+# В «минимальных» образах может не быть Python и часовых поясов (нужны для Asia/Almaty).
+if command -v apt-get >/dev/null 2>&1; then
+  missing=""
+  for pkg in python3 tzdata; do
+    dpkg -s "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
+  done
+  if [ -n "$missing" ]; then
+    echo "Устанавливаю:$missing"
+    apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $missing
+  fi
+fi
 if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
   echo "Нужен Python 3.11 или новее — выберите Ubuntu 24.04 или Debian 12."
   exit 1
