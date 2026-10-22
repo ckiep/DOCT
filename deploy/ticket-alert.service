@@ -1,0 +1,27 @@
+[Unit]
+Description=TravelEasy: Telegram-бот дешёвых авиабилетов
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ticketalert
+WorkingDirectory=/opt/ticket_alert
+ExecStart=/usr/bin/python3 -m ticket_alert -c /opt/ticket_alert/config.toml
+# Упал или сервер перезагрузился — запускаемся снова. Код 2 — ошибка в config.toml,
+# её перезапуск не исправит, поэтому ждём, пока поправят файл.
+Restart=always
+RestartSec=10
+RestartPreventExitStatus=2
+# Часы публикации в канал и даты считаются по времени Казахстана.
+Environment=TZ=Asia/Almaty
+Environment=PYTHONUNBUFFERED=1
+# Боту не нужно ничего менять в системе, кроме своей папки.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/ticket_alert
+
+[Install]
+WantedBy=multi-user.target
