@@ -6,6 +6,7 @@ import sys
 import tomllib
 
 from .bot import Bot, serve
+from .channel import ChannelPoster, run_safely
 from .checker import RunSummary, run_once
 from .config import ConfigError, load_config
 from .places import Places
@@ -78,8 +79,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.once:
             return check(api)
 
-        bot = Bot(api, storage, source, places, config.currency, config.telegram_chat_id, config.public)
-        serve(api, bot, lambda: check(api), config.interval_minutes)
+        jobs = [(config.interval_minutes, lambda: check(api))]
+        poster = None
+        if config.channel:
+            poster = ChannelPoster(api, source, storage, places, config.currency, config.channel)
+            jobs.append((config.channel.every_minutes, lambda: run_safely(poster)))
+            log.info("автопостинг в %s включён", config.channel.chat)
+        bot = Bot(
+            api, storage, source, places, config.currency, config.telegram_chat_id, config.public, channel=poster
+        )
+        serve(api, bot, jobs)
         return 0
     except NotifyError as e:
         log.error("%s — проверьте bot_token и подключение к интернету", e)

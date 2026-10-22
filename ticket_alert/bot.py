@@ -10,6 +10,7 @@ from datetime import date
 from html import escape
 from typing import Any, Callable
 
+from .channel import ChannelPoster
 from .checker import PriceSource, check_route, relevant_offers, typical_price
 from .dates import describe_departure, is_expired, parse_departure, upcoming_months
 from .formatting import (
@@ -122,6 +123,7 @@ class Bot:
         owner_chat_id: int | None,
         public: bool = False,
         today: Callable[[], date] = date.today,
+        channel: ChannelPoster | None = None,
     ) -> None:
         self.api = api
         self.storage = storage
@@ -131,6 +133,7 @@ class Bot:
         self.owner_chat_id = owner_chat_id
         self.public = public
         self.today = today
+        self.channel = channel
         # Незаконченные диалоги «добавить направление» / «куда дёшево» по чатам.
         self.dialogs: dict[int, dict[str, Any]] = {}
 
@@ -179,6 +182,7 @@ class Bot:
         }
         if chat_id == self.owner_chat_id:
             actions["/users"] = self._show_users
+            actions["/post"] = self._post_to_channel
         if command in actions:
             actions[command](chat_id)
             return
@@ -598,6 +602,34 @@ class Bot:
         rows = [[(f"🚫 {name}", f"rm:{user_id}")] for user_id, name in users]
         self._show(chat_id, message_id, "\n".join(lines), inline_keyboard(rows))
 
+    # --- канал
+
+    def _post_to_channel(self, chat_id: int) -> None:
+        if self.channel is None:
+            self.api.send_message(
+                chat_id, "Автопостинг не настроен: впишите адрес канала в раздел [channel] файла config.toml."
+            )
+            return
+        settings = self.channel.settings
+        self.api.send_message(chat_id, f"Ищу находки для {escape(str(settings.chat))}…")
+        try:
+            posted = self.channel.run(force=True)
+        except NotifyError as e:
+            self.api.send_message(
+                chat_id,
+                f"Не получилось опубликовать: {escape(str(e))}\n"
+                "Проверьте, что бот — администратор канала с правом публиковать сообщения.",
+            )
+            return
+        if posted:
+            self.api.send_message(chat_id, f"Опубликовано в канал: {posted}.")
+        else:
+            self.api.send_message(
+                chat_id,
+                f"Новых находок дешевле обычного на {settings.min_discount}% и больше нет "
+                "(или лимит постов на сутки уже исчерпан).",
+            )
+
     # --- список направлений
 
     def _show_list(self, chat_id: int, message_id: int | None = None) -> None:
@@ -662,23 +694,26 @@ class Bot:
 def serve(
     api: TelegramAPI,
     bot: Bot,
-    check: Callable[[], Any],
-    interval_minutes: int,
+    jobs: list[tuple[int, Callable[[], Any]]],
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
-    """Главный цикл: принимает сообщения и по расписанию проверяет цены."""
+    """Главный цикл: принимает сообщения и выполняет задачи по расписанию.
+
+    jobs — пары (раз во сколько минут, функция): проверка цен, автопостинг в канал.
+    """
     me = api.call("getMe")
     api.set_commands(COMMANDS)
     log.info("бот @%s запущен — откройте его в Telegram и нажмите /start", me.get("username"))
 
     offset = None
-    next_check = clock()
+    next_run = [clock()] * len(jobs)
     while True:
-        if clock() >= next_check:
-            check()
-            next_check = clock() + interval_minutes * 60
-        wait = int(max(1, min(25, next_check - clock())))
+        for i, (minutes, job) in enumerate(jobs):
+            if clock() >= next_run[i]:
+                job()
+                next_run[i] = clock() + minutes * 60
+        wait = int(max(1, min([25.0] + [t - clock() for t in next_run])))
         try:
             updates = api.get_updates(offset, wait)
         except NotifyError as e:

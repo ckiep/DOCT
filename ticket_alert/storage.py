@@ -197,9 +197,26 @@ class Storage:
         ).fetchone()
         return row[0] if row else None
 
-    def remember(self, route_key: str, offers: Iterable[tuple[str, Offer]]) -> None:
+    def last_notified(self, route_key: str, offer_key: str) -> tuple[int, datetime] | None:
+        """Цена и время последнего оповещения (UTC)."""
+        row = self.conn.execute(
+            "SELECT price, notified_at FROM notified WHERE route_key = ? AND offer_key = ?",
+            (route_key, offer_key),
+        ).fetchone()
+        return (row[0], datetime.fromisoformat(row[1])) if row else None
+
+    def count_notified_since(self, route_key: str, since: datetime) -> int:
+        since_text = since.astimezone(timezone.utc).isoformat(timespec="seconds")
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM notified WHERE route_key = ? AND notified_at >= ?",
+            (route_key, since_text),
+        ).fetchone()[0]
+
+    def remember(
+        self, route_key: str, offers: Iterable[tuple[str, Offer]], at: datetime | None = None
+    ) -> None:
         """Запоминает отправленные варианты: пары (ключ варианта, предложение)."""
-        now = _now()
+        now = at.astimezone(timezone.utc).isoformat(timespec="seconds") if at else _now()
         self.conn.executemany(
             """
             INSERT INTO notified (route_key, offer_key, price, departure_date, notified_at)

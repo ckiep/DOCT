@@ -25,6 +25,11 @@ def inline_keyboard(rows: list[list[Button]]) -> dict[str, Any]:
     return {"inline_keyboard": [[{"text": t, "callback_data": d} for t, d in row] for row in rows]}
 
 
+def link_keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
+    """Кнопки-ссылки: (текст, URL). Работают и в постах канала."""
+    return {"inline_keyboard": [[{"text": t, "url": u} for t, u in row] for row in rows]}
+
+
 class TelegramAPI:
     def __init__(
         self,

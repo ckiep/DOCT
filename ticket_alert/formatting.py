@@ -123,6 +123,36 @@ def format_alert(
     return "\n".join(lines)
 
 
+def format_channel_post(offer: Offer, typical: int, currency: str, names: Names, record: bool = False) -> str:
+    """Пост для канала: одна находка, крупно и понятно без контекста."""
+    percent = discount(offer.price, typical)
+    arrow = "⇄" if offer.return_at else "→"
+    icon = "🔥" if percent >= 30 else "✈️"
+    lines = [
+        f"{icon} <b>{escape(names(offer.origin))} {arrow} {escape(names(offer.destination))} — "
+        f"{format_price(offer.price, currency)}</b>"
+    ]
+    if offer.return_at:
+        lines.append(
+            f"📅 Туда-обратно: {offer.departure_at:%d.%m %H:%M} → {offer.return_at:%d.%m} ({days(offer.trip_days)})"
+        )
+        legs = (
+            "прямые рейсы"
+            if offer.transfers == offer.return_transfers == 0
+            else f"туда {stops(offer.transfers)}, обратно {stops(offer.return_transfers)}"
+        )
+    else:
+        lines.append(f"📅 В одну сторону: {offer.departure_at:%d.%m} в {offer.departure_at:%H:%M}")
+        legs = "прямой рейс" if offer.transfers == 0 else stops(offer.transfers)
+    flight = f"{offer.airline} {offer.flight_number}".strip()
+    lines.append(f"✈️ {legs.capitalize()}" + (f", {escape(flight)}" if flight else ""))
+    lines.append(f"📉 −{percent}% к обычной цене ({about_price(typical, currency)})")
+    if record:
+        lines.append("🏆 Самая низкая цена, что я видел на этом направлении")
+    lines += ["", "<i>Цена из недавних поисков на Aviasales — проверьте её перед покупкой.</i>"]
+    return "\n".join(lines)
+
+
 def cheapest_by_destination(offers: Iterable[Offer]) -> list[Offer]:
     best: dict[str, Offer] = {}
     for offer in offers:

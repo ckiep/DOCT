@@ -8,6 +8,7 @@ from datetime import datetime
 from ticket_alert.models import Offer, Route
 from ticket_alert.places import Places
 from ticket_alert.storage import Storage
+from ticket_alert.telegram import NotifyError
 
 
 def make_route(**overrides) -> Route:
@@ -90,11 +91,17 @@ class FakeTelegram:
         self.sent: list[dict] = []  # sendMessage и editMessageText по порядку
         self.answers: list[tuple[str, str | None]] = []
         self._next_id = 100
+        self.fail_chats: set = set()  # чаты, куда отправка падает (например, бот не админ канала)
 
     def send(self, chat_id, text):
         self.send_message(chat_id, text)
 
+    def call(self, method, params=None, timeout=None):
+        return {"username": "traveleasy_bot"} if method == "getMe" else True
+
     def send_message(self, chat_id, text, reply_markup=None):
+        if chat_id in self.fail_chats:
+            raise NotifyError("Telegram: Bad Request: chat not found")
         self._next_id += 1
         self.sent.append(
             {"method": "send", "chat_id": chat_id, "text": text, "markup": reply_markup, "message_id": self._next_id}

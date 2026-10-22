@@ -60,6 +60,29 @@ class ConfigTest(unittest.TestCase):
             with self.subTest(value), self.assertRaisesRegex(ConfigError, "marker"):
                 self.load(travelpayouts=f'token="x"\nmarker={value}')
 
+    def test_channel_is_off_by_default(self):
+        self.assertIsNone(self.load().channel)
+        self.assertIsNone(load_config(ROOT / "config.example.toml", env={"TRAVELPAYOUTS_TOKEN": "x"}).channel)
+
+    def test_channel_settings(self):
+        channel = self.load(extra='[channel]\nid = "@traveleasy_kz"\norigins = ["ala", "CIT"]\npost_hours = [8, 23]\n').channel
+        self.assertEqual(channel.chat, "@traveleasy_kz")
+        self.assertEqual(channel.origins, ("ALA", "CIT"))
+        self.assertEqual((channel.min_discount, channel.post_hours, channel.sub_id), (20, (8, 23), "channel"))
+        self.assertEqual(self.load(extra='[channel]\nid = "-1001234567890"\n').channel.chat, -1001234567890)
+
+    def test_channel_validation(self):
+        cases = {
+            'id = "traveleasy_kz"': "@адрес канала",
+            'id = "@x"\norigins = ["Almaty"]': "origins",
+            'id = "@x"\nmin_discount = 0': "min_discount",
+            'id = "@x"\npost_hours = [22, 9]': "post_hours",
+            'id = "@x"\nsub_id = "канал"': "sub_id",
+        }
+        for body, message in cases.items():
+            with self.subTest(body), self.assertRaisesRegex(ConfigError, message):
+                self.load(extra=f"[channel]\n{body}\n")
+
     def test_old_routes_are_detected(self):
         config = self.load(extra='[[routes]]\norigin="ALA"\ndestination="IST"\ndeparture="2026-12"\nmax_price=1\n')
         self.assertTrue(config.legacy_routes)
