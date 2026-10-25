@@ -621,13 +621,26 @@ class Bot:
                 "Проверьте, что бот — администратор канала с правом публиковать сообщения.",
             )
             return
+        stats = self.channel.last_stats
+        if stats.blocked == "limit":
+            self.api.send_message(
+                chat_id, f"Лимит {settings.max_posts_per_day} постов за сутки уже исчерпан — новые пойдут завтра."
+            )
+            return
+        report = (
+            f"Проверил городов: {stats.cities}\n"
+            f"• мало данных, чтобы понять обычную цену: {stats.no_typical}\n"
+            f"• скидка меньше {settings.min_discount}%: {stats.small_discount}\n"
+            f"• подходят: {stats.found}, из них уже были в канале: {stats.already_posted}"
+        )
         if posted:
-            self.api.send_message(chat_id, f"Опубликовано в канал: {posted}.")
+            self.api.send_message(chat_id, f"Опубликовано в канал: {posted}.\n\n{report}")
         else:
             self.api.send_message(
                 chat_id,
-                f"Новых находок дешевле обычного на {settings.min_discount}% и больше нет "
-                "(или лимит постов на сутки уже исчерпан).",
+                f"Новых находок нет.\n\n{report}\n\n"
+                "Чтобы постов было больше, уменьшите min_discount в config.toml (например, до 10–15) "
+                "или добавьте городов в origins.",
             )
 
     # --- список направлений

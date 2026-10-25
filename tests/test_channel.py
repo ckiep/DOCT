@@ -1,9 +1,9 @@
 import unittest
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from ticket_alert.bot import Bot, serve
-from ticket_alert.channel import CHANNEL_KEY, ChannelPoster, ChannelSettings, with_sub_id
+from ticket_alert.channel import CHANNEL_KEY, ChannelPoster, ChannelSettings, channel_months, with_sub_id
 from ticket_alert.places import Places
 
 from tests.helpers import FakeSource, FakeTelegram, make_offer, memory_storage
@@ -86,6 +86,27 @@ class ChannelPosterTest(ChannelTestCase):
         # Самые большие скидки — первыми.
         self.assertIn("Стамбул", self.posts()[0]["text"])
 
+    def test_stats(self):
+        self.poster.run()
+        stats = self.poster.last_stats
+        # Внутренний рейс в Шымкент отсеивается ещё до проверки, Ташкент — по скидке.
+        self.assertEqual((stats.cities, stats.small_discount, stats.found, stats.posted), (2, 1, 1, 1))
+
+    def test_checks_only_the_cheapest_candidates(self):
+        poster = self.make_poster(candidates=1)
+        self.assertEqual(poster.run(), 0)  # самый дешёвый — Ташкент, у него скидка маленькая
+        self.assertEqual(poster.last_stats.cities, 1)
+
+    def test_same_city_in_another_month_is_a_new_find(self):
+        def january(offer):
+            return replace(offer, departure_at=offer.departure_at.replace(year=2027, month=1))
+
+        december = market({"IST": 40000})
+        self.source.offers = lambda r: [january(o) for o in december(replace(r, departure="2026-12"))] if r.departure == "2027-01" else december(r)
+        poster = self.make_poster(max_posts_per_run=5)
+        self.assertEqual(poster.run(), 2)
+        self.assertEqual(sorted(p["text"].count("Стамбул") for p in self.posts()), [1, 1])
+
     def test_quiet_hours(self):
         self.now = NOON.replace(hour=3)
         self.assertEqual(self.poster.run(), 0)
@@ -104,6 +125,13 @@ class ChannelPosterTest(ChannelTestCase):
         self.assertTrue(self.posts()[0]["markup"]["inline_keyboard"][0][0]["url"].endswith("marker=123456.channel"))
 
 
+class ChannelMonthsTest(unittest.TestCase):
+    def test_skips_a_month_that_is_almost_over(self):
+        self.assertEqual(channel_months(date(2026, 10, 5), 2), ["2026-10", "2026-11"])
+        self.assertEqual(channel_months(date(2026, 10, 25), 2), ["2026-11", "2026-12"])
+        self.assertEqual(channel_months(date(2026, 12, 28), 2), ["2027-01", "2027-02"])
+
+
 class PostCommandTest(ChannelTestCase):
     def make_bot(self, channel):
         return Bot(self.api, self.storage, self.source, Places.builtin(), "kzt", OWNER, channel=channel)
@@ -114,9 +142,24 @@ class PostCommandTest(ChannelTestCase):
 
     def test_owner_posts_now(self):
         self.now = NOON.replace(hour=3)  # ночью тоже — это ручной запуск
-        self.assertEqual(self.command(self.make_bot(self.poster)), "Опубликовано в канал: 1.")
+        reply = self.command(self.make_bot(self.poster))
+        self.assertTrue(reply.startswith("Опубликовано в канал: 1."))
+        self.assertIn("Проверил городов: 2", reply)
         self.assertEqual(len(self.posts()), 1)
         self.assertIn("Новых находок", self.command(self.make_bot(self.poster)))
+
+    def test_explains_why_nothing_was_posted(self):
+        self.source.offers = market({"TAS": 30000})
+        reply = self.command(self.make_bot(self.poster))
+        self.assertIn("Новых находок нет", reply)
+        self.assertIn("скидка меньше 15%: 1", reply)
+        self.assertIn("уменьшите min_discount", reply)
+
+    def test_daily_limit_is_reported(self):
+        poster = self.make_poster(max_posts_per_day=1)
+        bot = self.make_bot(poster)
+        self.command(bot)
+        self.assertIn("Лимит 1 постов за сутки", self.command(bot))
 
     def test_not_configured(self):
         self.assertIn("Автопостинг не настроен", self.command(self.make_bot(None)))

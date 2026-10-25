@@ -142,8 +142,9 @@ def _parse_channel(raw: Mapping[str, Any]) -> ChannelSettings | None:
     return ChannelSettings(
         chat=int(chat) if _CHAT_ID.match(chat) else chat,
         origins=origins,
-        min_discount=_int(raw, "min_discount", 20, 1, 90),
+        min_discount=_int(raw, "min_discount", 15, 1, 90),
         months_ahead=_int(raw, "months_ahead", 2, 1, 12),
+        candidates=_int(raw, "candidates", 15, 1, 50),
         round_trip=round_trip,
         max_posts_per_day=_int(raw, "max_posts_per_day", 5, 1, 100),
         max_posts_per_run=_int(raw, "max_posts_per_run", 2, 1, 100),

@@ -68,7 +68,8 @@ class ConfigTest(unittest.TestCase):
         channel = self.load(extra='[channel]\nid = "@traveleasy_kz"\norigins = ["ala", "CIT"]\npost_hours = [8, 23]\n').channel
         self.assertEqual(channel.chat, "@traveleasy_kz")
         self.assertEqual(channel.origins, ("ALA", "CIT"))
-        self.assertEqual((channel.min_discount, channel.post_hours, channel.sub_id), (20, (8, 23), "channel"))
+        self.assertEqual((channel.min_discount, channel.post_hours, channel.sub_id), (15, (8, 23), "channel"))
+        self.assertEqual(channel.candidates, 15)
         self.assertEqual(self.load(extra='[channel]\nid = "-1001234567890"\n').channel.chat, -1001234567890)
 
     def test_channel_validation(self):
