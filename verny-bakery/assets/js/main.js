@@ -4,9 +4,9 @@
   'use strict';
 
   // ---- business settings: change here (and the same values in index.html)
-  const WA_NUMBER = '77000000000';         // WhatsApp: digits only, with country code
-  const PHONE_LABEL = '+7 700 000 00 00';  // phone as shown to people
-  const OPEN = '07:30', CLOSE = '20:00';   // pickup window = opening hours
+  const WA_NUMBER = '77005289504';         // WhatsApp: digits only, with country code
+  const PHONE_LABEL = '+7 700 528 95 04';  // phone as shown to people
+  const OPEN = '07:30', CLOSE = '22:00';   // pickup window = opening hours
 
   const { MSG, DICT } = window.VERNY_I18N;
   const VARS = { phone: PHONE_LABEL, open: OPEN, close: CLOSE };
