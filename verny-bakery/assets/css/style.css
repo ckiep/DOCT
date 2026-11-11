@@ -55,6 +55,7 @@ header{position:sticky;top:0;z-index:20;background:var(--green);color:var(--crea
 .menu{display:flex;gap:28px;list-style:none;margin:0;padding:0}
 .menu a{text-decoration:none;font-size:.9rem;opacity:.9;white-space:nowrap}
 @media (max-width:1320px){.menu{gap:20px}.nav-right .icon-btn{display:none}}
+@media (max-width:1240px){.menu{gap:13px}.menu a{font-size:.86rem}}
 .menu a:hover{opacity:1;color:var(--gold-soft)}
 .nav-right{display:flex;align-items:center;gap:10px}
 .icon-btn{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;border:1px solid rgba(251,245,234,.35);color:var(--cream);text-decoration:none}
@@ -138,6 +139,20 @@ section{padding-block:clamp(64px,9vw,110px)}
 .round svg{width:18px;height:18px}
 @media (max-width:960px){.cards{grid-template-columns:repeat(2,1fr)}}
 @media (max-width:480px){.cards{grid-template-columns:1fr}}
+
+/* offers */
+.promo-sec{background:var(--beige)}
+.promos{display:grid;grid-template-columns:repeat(2,1fr);gap:20px}
+.promo{background:var(--white);border-radius:var(--r-lg);overflow:hidden;display:grid;grid-template-columns:1fr 1.15fr}
+.promo img{width:100%;height:100%;min-height:280px;object-fit:cover}
+.promo-body{padding:clamp(20px,3vw,30px);display:flex;flex-direction:column;align-items:flex-start;gap:10px}
+.promo-body h3{font-size:clamp(1.7rem,2.6vw,2.1rem)}
+.promo-body p{color:var(--muted);font-size:.95rem}
+.promo-body .eyebrow{color:var(--gold)}
+.promo-body .promo-price{font-family:var(--display);font-size:2.4rem;font-weight:700;line-height:1;color:var(--gold);font-variant-numeric:lining-nums}
+.promo-body .btn{margin-top:auto}
+@media (max-width:960px){.promos{grid-template-columns:1fr}}
+@media (max-width:520px){.promo{grid-template-columns:1fr}.promo img{height:auto;min-height:0;aspect-ratio:4/3}}
 
 /* dialogs: full menu + photo viewer */
 dialog{border:0;border-radius:var(--r-lg);padding:0;max-width:min(760px,calc(100% - 32px));width:100%;max-height:calc(100% - 32px);background:var(--cream);color:var(--ink);box-shadow:0 40px 80px -30px rgba(0,0,0,.5)}
